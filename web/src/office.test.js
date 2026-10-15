@@ -114,6 +114,29 @@ test('holidays and leave days are excluded from missing-log and from the working
   assert.deepEqual(workStats(daily, '2026-10-19').missing, ['2026-10-12', '2026-10-13', '2026-10-14']);
 });
 
+test('offDays merges Redmine leave days: not missing, not averaged, beat manual leave, lose to holidays', () => {
+  const daily = [
+    { date: '2026-10-12', hours: 8 },   // Mon: Redmine leave (8 h "Leave") -> excluded from the average
+    { date: '2026-10-13', hours: 0 },   // Tue: Redmine leave with 0 h in daily (outside range edge) -> not missing
+    { date: '2026-10-14', hours: 6 },   // Wed: normal day
+    { date: '2026-10-15', hours: 0 },   // Thu: holiday + Redmine leave -> holiday wins
+    { date: '2026-10-16', hours: 0 },   // Fri: really missing
+    { date: '2026-10-19', hours: 0 },   // Mon = today
+  ];
+  const rm = [{ date: '2026-10-12', hours: 8 }, { date: '2026-10-13', hours: 4 }, { date: '2026-10-15', hours: 8 }, { hours: 1 }, null];
+  const off = offDays([{ date: '2026-10-15', name: 'H' }], ['2026-10-12'], rm);
+  assert.equal(off['2026-10-12'].kind, 'redmine');   // also toggled manually: Redmine wins
+  assert.equal(off['2026-10-12'].name, 'ลา (Redmine)');
+  assert.equal(off['2026-10-13'].hours, 4);
+  assert.equal(off['2026-10-15'].kind, 'holiday');
+  const s = workStats(daily, '2026-10-19', off);
+  assert.deepEqual(s.missing, ['2026-10-16']);
+  assert.equal(s.avg, 6);
+  assert.equal(s.avgDays, 1);
+  assert.deepEqual(s.offDays, ['2026-10-12', '2026-10-13', '2026-10-15']);
+  assert.deepEqual(offDays([], [], undefined), {});
+});
+
 // Desktop notification rules (hand-written events, not a live connection).
 const ev = (status, event, id = 's1') => ({ session: { id, status, project: 'neko-dream-office' }, item: { event } });
 const base = (extra = {}) => ({ enabled: true, permission: 'granted', conn: 'live', scope: 'all', viewedId: 's1', visible: false, last: {}, at: 10_000, ...extra });
@@ -184,4 +207,134 @@ test('simulated: phone layout keeps up to 3 kittens per desk fully inside the ro
       assert.ok(Math.abs(a.left - b.left) >= KITTEN_NARROW.step - 0.01 || Math.abs(a.top - b.top) >= KITTEN_NARROW.row - 0.01, `${desk} ${a.agent.id}/${b.agent.id}`);
     }
   }
+});
+
+// Redmine "มีอัปเดต" (SIMULATED issues and seen maps, hand-written — not live Redmine data).
+import { rmAlert, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText } from './office.js';
+const rmi = (id, updatedOn, lastActivity) => ({ id, subject: `S${id}`, updatedOn, lastActivity });
+test('simulated: rmAlert new / updated / by me / seen', () => {
+  const seen = { 1: '2026-10-10T00:00:00Z', 2: '2026-10-10T00:00:00Z', 3: '2026-10-10T00:00:00Z' };
+  assert.equal(rmAlert(rmi(9, '2026-10-12T00:00:00Z'), seen).kind, 'new');
+  assert.equal(rmAlert(rmi(1, '2026-10-12T00:00:00Z', { byMe: false, kinds: ['comment', 'status'] }), seen).kind, 'comment');
+  assert.equal(rmAlert(rmi(2, '2026-10-12T00:00:00Z', null), seen).kind, 'other'); // activity not read yet
+  assert.equal(rmAlert(rmi(2, '2026-10-12T00:00:00Z', { byMe: true, kinds: ['comment'] }), seen), null);
+  assert.equal(rmAlert(rmi(9, '2026-10-12T00:00:00Z', { byMe: true, kinds: ['other'] }), seen), null); // I created it
+  assert.equal(rmAlert(rmi(3, '2026-10-10T00:00:00Z', { byMe: false, kinds: ['comment'] }), seen), null);
+  assert.equal(rmAlert(rmi(3, '2026-10-12T00:00:00Z', { byMe: null, kinds: ['assignee'] }), seen).text, 'มอบหมายใหม่');
+  assert.equal(rmAlert(rmi(3, '2026-10-12T00:00:00Z'), null), null); // no seen map yet = no flood
+});
+test('simulated: mark seen, parse, fresh alerts and notification text', () => {
+  const issues = [rmi(1, '2026-10-12T00:00:00Z'), rmi(2, '2026-10-13T00:00:00Z')];
+  const seen = rmMarkSeen({}, issues);
+  assert.deepEqual(rmAlerts(issues, seen), {});
+  assert.deepEqual(rmParseSeen(JSON.stringify(seen)), { 1: '2026-10-12T00:00:00Z', 2: '2026-10-13T00:00:00Z' });
+  assert.equal(rmParseSeen('[1]'), null);
+  assert.equal(rmParseSeen('{bad'), null);
+  assert.deepEqual(rmParseSeen('{"x":"a","5":3,"6":"b"}'), { 6: 'b' });
+  const big = rmMarkSeen({}, Array.from({ length: 350 }, (_, n) => rmi(n + 1, `2026-10-${String(1 + (n % 28)).padStart(2, '0')}`)));
+  assert.equal(Object.keys(big).length, 300);
+  const known = new Set();
+  const a = rmAlerts([rmi(1, '2026-10-14T00:00:00Z', { byMe: false, kinds: ['comment'] })], seen);
+  assert.equal(rmFreshAlerts(known, a).length, 1);
+  assert.equal(rmFreshAlerts(known, a).length, 0); // the same update never alerts twice
+  const n = rmNotifyText({ id: 1, say: 'มีคนตอบ' }, 'x'.repeat(100));
+  assert.equal(n.title, '📋 Redmine');
+  assert.ok(n.body.startsWith('#1 มีคนตอบ — ') && n.body.length < 80);
+});
+test('redmineLive: only a live push may alert, a snapshot resets it', () => {
+  let s = reducer(initialState, { type: 'redmine', redmine: { issues: [] } });
+  assert.equal(s.redmineLive, true);
+  s = reducer(s, { type: 'snapshot', sessions: [], feed: [], redmine: { issues: [] } });
+  assert.equal(s.redmineLive, false);
+});
+
+import { suggestHours, logTimeUrl, usualActivity, claudeDay, claudeMs } from './office.js';
+test('suggestHours rounds to 15 minutes, never 0 for real work', () => {
+  assert.equal(suggestHours(0), null);
+  assert.equal(suggestHours(3 * 60_000), 0.25);
+  assert.equal(suggestHours(130 * 60_000), 2.25);
+  assert.equal(suggestHours(127 * 60_000), 2.0);
+});
+test('logTimeUrl pre-fills Redmine\'s own form', () => {
+  assert.equal(logTimeUrl(null, { issueId: 1 }), null);
+  assert.equal(logTimeUrl('https://rm', { issueId: 104498, date: '2026-10-15', hours: 2.25, activityId: 9 }),
+    'https://rm/issues/104498/time_entries/new?time_entry%5Bspent_on%5D=2026-10-15&time_entry%5Bhours%5D=2.25&time_entry%5Bactivity_id%5D=9');
+  assert.equal(logTimeUrl('https://rm', { issueId: 5 }), 'https://rm/issues/5/time_entries/new');
+  assert.equal(logTimeUrl('https://rm', { date: '2026-10-15' }), 'https://rm/time_entries/new?time_entry%5Bspent_on%5D=2026-10-15');
+});
+test('usualActivity: most used, never Leave', () => {
+  const log = [{ activityId: 3, activity: 'Leave' }, { activityId: 3, activity: 'Leave' }, { activityId: 9, activity: 'Dev' }, { activityId: 9, activity: 'Dev' }, { activityId: 4, activity: 'Doc' }];
+  assert.equal(usualActivity(log), 9);
+  assert.equal(usualActivity([]), null);
+});
+test('claudeDay: what is still unlogged per ticket', () => {
+  const M = 60_000;
+  const ct = { days: [{ date: '2026-10-15', items: [
+    { ticket: 1, project: null, ms: 130 * M }, { ticket: 2, project: null, ms: 80 * M },
+    { ticket: 3, project: null, ms: 65 * M }, { ticket: null, project: 'x', ms: 25 * M }, { ticket: 4, project: null, ms: 30_000 },
+  ] }] };
+  const log = [{ spentOn: '2026-10-15', issueId: 1, hours: 2.5 }, { spentOn: '2026-10-15', issueId: 3, hours: 1 }, { spentOn: '2026-10-14', issueId: 2, hours: 5 }];
+  assert.deepEqual(claudeDay(ct, '2026-10-15', log).map((r) => [r.ticket, r.logged, r.suggest]),
+    [[1, 2.5, null], [2, 0, 1.25], [3, 1, null], [null, null, 0.5]]); // 5 min left on #3 counts as covered; <1 min dropped
+  assert.deepEqual(claudeDay(ct, '2026-10-16', log), []);
+  assert.equal(claudeMs(ct, '2026-10-15', 2), 80 * M);
+  assert.equal(claudeMs(null, '2026-10-15', 2), 0);
+});
+
+import { todayBrief, endOfDay, prevWorkday, parseClock, isResolved } from './office.js';
+const at = (h, m = 0) => new Date(2026, 9, 15, h, m).getTime(); // Thu 15 Oct 2026
+const M60 = 3_600_000;
+const rm = {
+  issues: [
+    { id: 1, subject: 'late', status: 'In Progress', dueDate: '2026-10-13', url: 'u1' },
+    { id: 2, subject: 'today', status: 'New', dueDate: '2026-10-15', url: 'u2' },
+    { id: 3, subject: 'later', status: 'New', dueDate: '2026-10-20' },
+    { id: 4, subject: 'done', status: 'Resolved', dueDate: '2026-10-01' },
+  ],
+  time: {
+    today: '2026-10-15',
+    daily: [{ date: '2026-10-12', hours: 8 }, { date: '2026-10-13', hours: 0 }, { date: '2026-10-14', hours: 6 }, { date: '2026-10-15', hours: 3.5 }],
+    log: [{ spentOn: '2026-10-15', issueId: 1, hours: 2 }],
+  },
+};
+const ct = { days: [
+  { date: '2026-10-15', items: [{ ticket: 1, project: null, ms: 2 * M60 }, { ticket: 2, project: null, ms: 1.25 * M60 }] },
+  { date: '2026-10-14', items: [{ ticket: 3, project: null, ms: 0.5 * M60 }] },
+] };
+
+test('prevWorkday skips weekends and days off', () => {
+  assert.equal(prevWorkday('2026-10-19'), '2026-10-16'); // Mon -> Fri
+  assert.equal(prevWorkday('2026-10-15', { '2026-10-14': {} }), '2026-10-13');
+});
+test('parseClock', () => {
+  assert.equal(parseClock('17:00'), 1020);
+  assert.equal(parseClock('off'), null);
+  assert.equal(parseClock('25:00'), null);
+});
+test('todayBrief: due, updates, yesterday and today', () => {
+  const b = todayBrief({ redmine: rm, claudeTime: ct, alerts: { 3: { icon: '💬', text: 'มีคนตอบ' } }, now: at(9) });
+  assert.deepEqual(b.due.map((d) => [d.id, d.days]), [[1, -2], [2, 0]]);
+  assert.deepEqual(b.updates, [{ id: 3, subject: 'later', icon: '💬', text: 'มีคนตอบ' }]);
+  assert.equal(b.prev.date, '2026-10-14');
+  assert.equal(b.prev.short, 2);
+  assert.deepEqual(b.prev.unlogged.map((r) => [r.ticket, r.suggest]), [[3, 0.5]]);
+  assert.deepEqual(b.now.unlogged.map((r) => r.ticket), [2]);
+  assert.deepEqual(b.missing, ['2026-10-13']);
+  assert.equal(b.workday, true);
+  assert.ok(isResolved({ status: 'Resolved' }));
+  const empty = todayBrief({ redmine: null, claudeTime: null, now: at(9) });
+  assert.deepEqual([empty.due, empty.updates, empty.prev, empty.now, empty.missing], [[], [], null, null, []]);
+});
+test('endOfDay: once, after the time, on a working day, only when something is open', () => {
+  const base = { redmine: rm, claudeTime: ct, at: '17:00' };
+  assert.equal(endOfDay({ ...base, now: at(16, 59) }), null);
+  const r = endOfDay({ ...base, now: at(17, 5) });
+  assert.equal(r.date, '2026-10-15');
+  assert.equal(r.body, 'ลงเวลาวันนี้ 3:30 ชม. / 8 ชม. · Claude ทำยังไม่ลง: #2 1:15 ชม.');
+  assert.equal(endOfDay({ ...base, now: at(17, 5), done: '2026-10-15' }), null);
+  assert.equal(endOfDay({ ...base, now: at(17, 5), at: 'off' }), null);
+  assert.equal(endOfDay({ ...base, now: at(17, 5), off: { '2026-10-15': { kind: 'holiday' } } }), null);
+  const full = { ...rm, time: { ...rm.time, daily: [{ date: '2026-10-15', hours: 8 }], log: [{ spentOn: '2026-10-15', issueId: 1, hours: 2 }, { spentOn: '2026-10-15', issueId: 2, hours: 1.25 }] } };
+  assert.equal(endOfDay({ ...base, redmine: full, now: at(18) }), null);
+  assert.equal(endOfDay({ ...base, redmine: { ...rm, time: { ...rm.time, today: '2026-10-14' } }, now: at(18) }), null); // stale data
 });

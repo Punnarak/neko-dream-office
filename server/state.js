@@ -221,6 +221,19 @@ export class OfficeState {
     return publicSession(s);
   }
 
+  // The Redmine ticket ClaudeTime thinks this session works on ({ id, source } or null).
+  setTicket(sessionId, ticket) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    s.ticket = ticket || undefined;
+    return publicSession(s);
+  }
+
+  publicSession(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return s ? publicSession(s) : null;
+  }
+
   #session(id, raw, at) {
     let s = this.sessions.get(id);
     if (!s) {
@@ -300,6 +313,7 @@ function publicSession(s) {
     subagents: [...s.subagents.entries()].map(([id, a]) => ({ id, ...a })),
     agents: publicAgents(s),
     lastError: s.lastError,
+    ticket: s.ticket ?? null,
   };
 }
 

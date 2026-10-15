@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { mapIssue, loadConfig, summarizeTime, timeRange } from './redmine.js';
+import { mapIssue, loadConfig, summarizeTime, timeRange, lastActivityOf, RedmineFeed } from './redmine.js';
 
 test('mapIssue keeps only display fields and drops description', () => {
   const raw = {
@@ -122,4 +122,133 @@ test('summarizeTime caps the log', () => {
   assert.equal(t.log.length, 300);
   assert.equal(t.logTotal, 400);
   assert.equal(t.daily.at(-2).hours, 40);
+});
+
+// ---- "มีอัปเดต": newest journal + issues that left my list (hand-written fake payloads, no live Redmine) ----
+
+test('lastActivityOf keeps only time, byMe and kinds — never notes, values or names', () => {
+  const issue = {
+    id: 5, created_on: '2026-10-01T00:00:00Z', author: { id: 9, name: 'Somchai' },
+    journals: [
+      { id: 1, user: { id: 7, name: 'Me' }, created_on: '2026-10-02T00:00:00Z', notes: 'old', details: [] },
+      { id: 2, user: { id: 9, name: 'Somchai' }, created_on: '2026-10-03T00:00:00Z', notes: 'password=hunter2 please check',
+        details: [{ property: 'attr', name: 'status_id', old_value: '1', new_value: '2' },
+          { property: 'attr', name: 'assigned_to_id', old_value: '3', new_value: '7' },
+          { property: 'attachment', name: '12', new_value: 'secret.pdf' }] },
+    ],
+  };
+  const a = lastActivityOf(issue, 7);
+  assert.deepEqual(a, { at: '2026-10-03T00:00:00Z', byMe: false, kinds: ['comment', 'assignee', 'status', 'other'] });
+  const text = JSON.stringify(a);
+  for (const bad of ['hunter2', 'Somchai', 'secret.pdf', 'please']) assert.ok(!text.includes(bad), bad);
+  assert.equal(lastActivityOf(issue, 9).byMe, true);
+  assert.equal(lastActivityOf(issue, null).byMe, null); // my id unknown
+});
+
+test('lastActivityOf: priority/due, empty notes, no journals', () => {
+  const j = (details, notes = '') => ({ journals: [{ user: { id: 1 }, created_on: '2026-10-05T00:00:00Z', notes, details }] });
+  assert.deepEqual(lastActivityOf(j([{ property: 'attr', name: 'priority_id' }, { property: 'attr', name: 'due_date' }], '  '), 1).kinds, ['priority', 'due']);
+  assert.deepEqual(lastActivityOf(j([]), 1).kinds, ['other']);
+  assert.deepEqual(lastActivityOf({ created_on: '2026-10-01T00:00:00Z', author: { id: 1 }, journals: [] }, 1),
+    { at: '2026-10-01T00:00:00Z', byMe: true, kinds: ['other'] });
+  assert.equal(lastActivityOf({}, 1), null);
+});
+
+// A feed whose HTTP calls are answered by a fake Redmine held in memory.
+function fakeFeed(rm) {
+  const feed = new RedmineFeed({ config: { url: 'https://rm.example', apiKey: 'k' } });
+  feed.calls = [];
+  feed.fetchTime = async () => null;
+  feed.get = async (p) => {
+    feed.calls.push(p);
+    if (p === '/users/current.json') return { user: { id: 7, login: 'me', mail: 'me@x', api_key: 'zzz' } };
+    if (p.startsWith('/issues.json')) return { issues: rm.list.map(({ journals, ...i }) => i), total_count: rm.total ?? rm.list.length };
+    const m = p.match(/^\/issues\/(\d+)\.json\?include=journals$/);
+    if (m) return { issue: rm.list.find((i) => i.id === Number(m[1])) };
+    throw new Error('unexpected ' + p);
+  };
+  return feed;
+}
+const fakeIssue = (id, updated, journals = []) => ({ id, subject: `S${id}`, updated_on: updated, created_on: '2026-09-01T00:00:00Z', author: { id: 7 }, journals });
+const detailCalls = (f) => f.calls.filter((c) => /^\/issues\/\d+/.test(c)).length;
+
+test('fake Redmine: first refresh reads only the 10 most recently updated, then only changed issues', async () => {
+  const rm = { list: Array.from({ length: 14 }, (_, n) => fakeIssue(100 + n, `2026-10-${String(14 - n).padStart(2, '0')}T00:00:00Z`)) };
+  const f = fakeFeed(rm);
+  await f.refresh();
+  assert.equal(detailCalls(f), 10);
+  assert.equal(f.calls.filter((c) => c === '/users/current.json').length, 1);
+  assert.equal(f.data.issues.filter((i) => i.lastActivity).length, 10);
+  assert.equal(f.myId, 7);
+  assert.ok(!JSON.stringify(f.data).includes('zzz') && !JSON.stringify(f.data).includes('me@x'));
+
+  // nothing changed: no detail requests, cached activity stays
+  f.calls = [];
+  await f.refresh();
+  assert.equal(detailCalls(f), 0);
+  assert.equal(f.data.issues.filter((i) => i.lastActivity).length, 10);
+
+  // someone else comments on #113 (was never read): only that one is fetched, users/current is not asked again
+  rm.list[13] = fakeIssue(113, '2026-10-15T00:00:00Z', [{ user: { id: 9 }, created_on: '2026-10-15T00:00:00Z', notes: 'hi', details: [] }]);
+  f.calls = [];
+  await f.refresh();
+  assert.deepEqual(f.calls.filter((c) => !c.startsWith('/issues.json')), ['/issues/113.json?include=journals']);
+  assert.deepEqual(f.data.issues.find((i) => i.id === 113).lastActivity, { at: '2026-10-15T00:00:00Z', byMe: false, kinds: ['comment'] });
+});
+
+test('fake Redmine: issues that leave my list are reported as gone for 24 h', async () => {
+  const rm = { list: [fakeIssue(1, '2026-10-14T00:00:00Z'), fakeIssue(2, '2026-10-13T00:00:00Z')] };
+  const f = fakeFeed(rm);
+  await f.refresh();
+  assert.deepEqual(f.data.gone, []);
+  rm.list = [rm.list[0]];
+  await f.refresh();
+  assert.deepEqual(f.data.gone.map(({ id, subject }) => ({ id, subject })), [{ id: 2, subject: 'S2' }]);
+  // back in the list → no longer gone; and old entries expire
+  rm.list.push(fakeIssue(2, '2026-10-15T00:00:00Z'));
+  await f.refresh();
+  assert.deepEqual(f.data.gone, []);
+  f.data.gone = [{ id: 3, subject: 'S3', at: Date.now() - 25 * 3600_000 }];
+  await f.refresh();
+  assert.deepEqual(f.data.gone, []);
+});
+
+test('fake Redmine: no gone report when the list is cut at 50', async () => {
+  const rm = { list: [fakeIssue(1, '2026-10-14T00:00:00Z'), fakeIssue(2, '2026-10-13T00:00:00Z')], total: 80 };
+  const f = fakeFeed(rm);
+  await f.refresh();
+  rm.list = [rm.list[0]];
+  await f.refresh();
+  assert.deepEqual(f.data.gone, []);
+});
+
+test('fake Redmine: a failing detail request is retried later and never breaks the list', async () => {
+  const rm = { list: [fakeIssue(1, '2026-10-14T00:00:00Z')] };
+  const f = fakeFeed(rm);
+  const realGet = f.get;
+  f.get = async (p) => { if (p.startsWith('/issues/1.json')) throw new Error('HTTP 403'); return realGet(p); };
+  await f.refresh();
+  assert.equal(f.data.error, null);
+  assert.equal(f.data.issues[0].lastActivity, null);
+  f.get = realGet;
+  await f.refresh();
+  assert.ok(f.data.issues[0].lastActivity);
+});
+
+test('summarizeTime marks days with "Leave" activity as leaveDays (hours still in totals, no comments)', () => {
+  const now = new Date(2026, 9, 14, 15, 0); // Wednesday
+  const t = summarizeTime([
+    { spent_on: '2026-10-13', hours: 4, activity: { name: 'Leave' }, comments: 'ลาป่วย secret' },
+    { spent_on: '2026-10-13', hours: 4, activity: { name: 'Leave' } },
+    { spent_on: '2026-10-12', hours: 8, activity: { name: 'Development' } },
+    { spent_on: '2026-10-09', hours: 2, activity: { name: 'leave' } },   // case differs: not leave (same as is_leave)
+    { spent_on: '2026-10-01', hours: 8, activity: { name: 'Leave' } },   // month start: still in range
+    { spent_on: '2026-10-15', hours: 8, activity: { name: 'Leave' } },   // future: ignored
+    { spent_on: '2026-10-07', hours: 'x', activity: { name: 'Leave' } }, // bad hours: ignored
+  ], now);
+  assert.deepEqual(t.leaveDays, [{ date: '2026-10-01', hours: 8 }, { date: '2026-10-13', hours: 8 }]);
+  assert.equal(t.weekHours, 16);   // leave hours stay in the totals
+  assert.equal(t.daily.find((d) => d.date === '2026-10-13').hours, 8);
+  assert.ok(!JSON.stringify(t.leaveDays).includes('secret'));
+  assert.deepEqual(summarizeTime([], now).leaveDays, []);
 });

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useOffice, useNow, refreshRedmine } from './useOffice.js';
-import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW } from './office.js';
+import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText, claudeDay, claudeMs, logTimeUrl, suggestHours, usualActivity, isResolved, todayBrief, endOfDay, parseClock, DAY_HOURS } from './office.js';
 import { unlockAudio, playSound } from './sound.js';
 import { Cat, Kitten } from './components/Cat.jsx';
 import { OfficeBackdrop, STATIONS } from './components/OfficeScene.jsx';
 import { SCENES, flavorOf } from './scenes.js';
+import { ANIMALS, animalOf, roleFor, withAnimal } from './animals.js';
 
 const short = (id) => (id ? id.slice(0, 8) : '');
 
@@ -28,6 +29,12 @@ export default function App() {
   const sound = useSoundAlerts(office, sessionId);
   const notify = useDesktopNotify(office, sessionId, sound.scope, (id) => setPicked(id));
   const look = useLook();
+  const cats = useMemo(() => withAnimal(CATS, look.animal), [look.animal]);
+  const demo = office.mode === 'demo';
+  const rmSeen = useRedmineSeen(office.redmine, demo);
+  const rmNew = useMemo(() => rmAlerts(office.redmine?.issues, rmSeen.seen), [office.redmine, rmSeen.seen]);
+  useRedmineAlerts(office, rmNew, rmSeen.seen, notify, sound, () => setPanel('tasks'));
+  const eod = useEndOfDay(office, notify, sound, () => setPanel('time'));
   const agents = agentsOf(session);
   const agent = agentId ? agents.find((a) => a.id === agentId) : null;
   // same order as kittenPlaces(agents): it sorts the same list the same way
@@ -56,7 +63,7 @@ export default function App() {
         </div>
         <div className="top-right">
           <SoundToggle sound={sound} />
-          <ThemeMenu look={look} notify={notify} sound={sound} />
+          <ThemeMenu look={look} notify={notify} sound={sound} eod={eod} />
           <ConnBadge office={office} />
         </div>
       </header>
@@ -74,6 +81,7 @@ export default function App() {
             >
               <i className={`dot tone-${stale ? 'stale' : STATUS[s.status]?.tone}`} />
               <b>{s.project || 'unknown'}</b>
+              {s.ticket && <small className="tab-ticket" title={TICKET_FROM[s.ticket.source]}>#{s.ticket.id}</small>}
               <small>{short(s.id)}</small>
             </button>
           );
@@ -91,8 +99,8 @@ export default function App() {
           <div className="scene">
             <OfficeBackdrop scene={look.scene} />
             <RoomBanner office={office} session={session} now={now} />
-            <Corkboard redmine={office.redmine} now={now} onOpen={() => setPanel('tasks')} />
-            {CATS.map((cat) => {
+            <Corkboard redmine={office.redmine} now={now} fresh={Object.keys(rmNew).length} onOpen={() => setPanel('tasks')} />
+            {cats.map((cat) => {
               const v = catView(cat, session, office.conn, now);
               const pos = STATIONS[cat.key];
               const flavor = flavorOf(look.scene, cat.key, v.chip); // scene word only; the real chip text stays
@@ -115,7 +123,7 @@ export default function App() {
                       </span>
                     )}
                   </span>
-                  <Cat cat={cat} pose={v.pose} scene={look.scene} />
+                  <Cat cat={cat} pose={v.pose} scene={look.scene} animal={look.animal} />
                   <span className="plate"><b>{cat.name}</b><span>{cat.role}</span></span>
                 </button>
               );
@@ -131,7 +139,7 @@ export default function App() {
                 aria-label={`agent ${agentLabel(a)} — ${a.tool ? `ใช้ ${a.tool.name}` : 'ว่าง รอบนพรม'} — ${tokenText(a.usage)}`}
                 title={`${agentLabel(a)}${a.tool ? ` · ${a.tool.name}${a.tool.summary ? ` · ${a.tool.summary}` : ''}` : ' · ว่าง'} · ${tokenText(a.usage)}`}
               >
-                <Kitten agent={a} pose={!live ? 'off' : a.tool ? 'busy' : 'awake'} scene={look.scene} chub={chubbiness(a.usage)} />
+                <Kitten agent={a} pose={!live ? 'off' : a.tool ? 'busy' : 'awake'} scene={look.scene} chub={chubbiness(a.usage)} animal={look.animal} />
                 <span className="kitten-tag"><span className="tag-full">{agentLabel(a)}</span><span className="tag-short" aria-hidden="true">{agentShort(a)}</span></span>
               </button>
             ))}
@@ -150,12 +158,13 @@ export default function App() {
           {!live && office.lastMessageAt && (
             <p className="stale-note">ข้อมูลด้านล่างเป็นข้อมูลล่าสุดก่อนการเชื่อมต่อหลุด ({timeOf(office.lastMessageAt)}) — ไม่ใช่สถานะปัจจุบัน</p>
           )}
-          <PanelTabs panel={shown} setPanel={setPanel} cat={CATS.find((c) => c.key === catKey)} agentName={agentId ? (agent ? agentLabel(agent) : 'Agent') : null} redmine={office.redmine} tokens={office.tokens} now={now} />
+          <TodayCard redmine={office.redmine} claudeTime={office.claudeTime} holidays={office.holidays} alerts={rmNew} now={now} eodAt={eod.at} onOpen={setPanel} />
+          <PanelTabs panel={shown} setPanel={setPanel} icon={animalOf(look.animal).icon} cat={CATS.find((c) => c.key === catKey)} agentName={agentId ? (agent ? agentLabel(agent) : 'Agent') : null} redmine={office.redmine} tokens={office.tokens} now={now} fresh={Object.keys(rmNew).length} />
           {shown === 'cat' && (agentId
-            ? <AgentDetails agent={agent} session={session} now={now} onBack={() => setAgentId(null)} />
-            : <Details cat={CATS.find((c) => c.key === catKey)} session={session} office={office} now={now} />)}
+            ? <AgentDetails agent={agent} session={session} now={now} animal={look.animal} onBack={() => setAgentId(null)} />
+            : <Details cat={cats.find((c) => c.key === catKey)} session={session} office={office} now={now} />)}
           {(shown === 'tasks' || shown === 'time') && (
-            <RedmineCard view={shown} redmine={office.redmine} holidays={office.holidays} live={live} demo={office.mode === 'demo'} now={now} />
+            <RedmineCard view={shown} redmine={office.redmine} holidays={office.holidays} claudeTime={office.claudeTime} live={live} demo={demo} now={now} alerts={rmNew} onSeen={rmSeen.mark} />
           )}
           {shown === 'tokens' && <TokenCard tokens={office.tokens} demo={office.mode === 'demo'} />}
         </aside>
@@ -244,11 +253,166 @@ function useDesktopNotify(office, viewedSessionId, scope, onPick) {
   };
 }
 
+// ---- Redmine "มีอัปเดต": what this browser has seen, and alerts for updates found by a live refresh ----
+
+const RM_SEEN_KEY = 'neko.rmSeen';
+const saveSeen = (v) => { try { localStorage.setItem(RM_SEEN_KEY, JSON.stringify(v)); } catch { /* storage blocked: this visit only */ } };
+
+function useRedmineSeen(redmine, demo) {
+  // demo keeps its own made-up seen map in memory and never touches the real one
+  const [seen, setSeen] = useState(() => (demo ? null : rmParseSeen(readPref(RM_SEEN_KEY, 'null'))));
+  useEffect(() => {
+    if (seen !== null || !redmine?.fetchedAt) return;
+    // first ever load: everything already on the list counts as seen (no flood of "ใหม่")
+    const base = demo ? (redmine.demoSeen || {}) : rmMarkSeen({}, redmine.issues);
+    if (!demo) saveSeen(base);
+    setSeen(base);
+  }, [redmine, seen, demo]);
+  // another tab of this page marked something seen
+  useEffect(() => {
+    if (demo) return undefined;
+    const onStore = (e) => { if (e.key === RM_SEEN_KEY) setSeen(rmParseSeen(e.newValue)); };
+    window.addEventListener('storage', onStore);
+    return () => window.removeEventListener('storage', onStore);
+  }, [demo]);
+  return {
+    seen,
+    mark: (issues) => setSeen((cur) => {
+      const next = rmMarkSeen(cur, issues);
+      if (!demo) saveSeen(next);
+      return next;
+    }),
+  };
+}
+
+// Desktop notification (and the soft bell, if sound is on) for updates that appear after a live refresh.
+// A snapshot (page load / reconnect) only records what is there, so it never alerts.
+const RM_NOTIFY_MAX = 3; // individual notifications per refresh; the rest become one summary
+function useRedmineAlerts(office, alerts, seen, notify, sound, onOpen) {
+  const known = useRef(null);
+  const open = useRef(onOpen);
+  open.current = onOpen;
+  useEffect(() => {
+    if (!office.redmine || seen === null) return;
+    if (known.current === null || !office.redmineLive || office.mode === 'demo') {
+      known.current = new Set(Object.values(alerts).map((a) => a.key));
+      return;
+    }
+    const fresh = rmFreshAlerts(known.current, alerts);
+    if (!fresh.length) return;
+    if (sound.on) playSound('completed');
+    const hidden = !(document.visibilityState === 'visible' && document.hasFocus());
+    if (!notify.on || !hidden || !notifySupported() || Notification.permission !== 'granted') return;
+    const subjects = Object.fromEntries(office.redmine.issues.map((i) => [i.id, i.subject]));
+    const show = (t) => {
+      try {
+        const n = new Notification(t.title, { body: t.body, tag: t.tag, silent: !sound.on });
+        n.onclick = () => { window.focus(); open.current(); n.close(); };
+      } catch { /* e.g. Android Chrome only allows notifications from a service worker */ }
+    };
+    const many = fresh.length > RM_NOTIFY_MAX;
+    for (const a of fresh.slice(0, many ? RM_NOTIFY_MAX - 1 : RM_NOTIFY_MAX)) show(rmNotifyText(a, subjects[a.id]));
+    if (many) {
+      const rest = fresh.slice(RM_NOTIFY_MAX - 1);
+      show({ title: '📋 Redmine', body: `อีก ${rest.length} งานมีอัปเดต: ${rest.slice(0, 6).map((a) => `#${a.id}`).join(' ')}${rest.length > 6 ? ' …' : ''}`, tag: 'neko-rm-more' });
+    }
+  }, [office.redmine, alerts]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+// ---- เย็น: one reminder per working day after the chosen time, when today is not fully logged ----
+
+const EOD_TIMES = ['off', '16:30', '17:00', '17:30', '18:00'];
+const EOD_DONE_KEY = 'neko.eodDone'; // the date it last fired, so a reload never repeats it
+
+function useEndOfDay(office, notify, sound, onOpen) {
+  const [at, setAt] = useState(() => readPref('neko.eodAt', '17:00'));
+  const cur = useRef();
+  cur.current = { office, notify, sound, at, onOpen };
+  useEffect(() => {
+    const check = () => {
+      const { office: o, notify: n, sound: snd, at: when, onOpen: open } = cur.current;
+      if (o.mode === 'demo' || o.conn !== 'live') return;
+      const off = offDays(o.holidays?.list, readLeave(), o.redmine?.time?.leaveDays);
+      const r = endOfDay({ redmine: o.redmine, claudeTime: o.claudeTime, off, now: Date.now(), at: when, done: readPref(EOD_DONE_KEY, '') });
+      if (!r) return;
+      writePref(EOD_DONE_KEY, r.date);
+      if (snd.on) playSound('completed');
+      if (!n.on || !notifySupported() || Notification.permission !== 'granted') return;
+      try {
+        const note = new Notification(r.title, { body: r.body, tag: r.tag, requireInteraction: true, silent: !snd.on });
+        note.onclick = () => { window.focus(); open(); note.close(); };
+      } catch { /* e.g. Android Chrome only allows notifications from a service worker */ }
+    };
+    check();
+    const id = setInterval(check, 60_000);
+    return () => clearInterval(id);
+  }, [office.redmine?.fetchedAt, at]); // also re-check as soon as fresh Redmine data arrives
+  return { at, set: (v) => { setAt(v); writePref('neko.eodAt', v); } };
+}
+
+// ---- เช้า: what needs me today, at the top of the side panel ----
+
+function TodayCard({ redmine, claudeTime, holidays, alerts, now, eodAt, onOpen }) {
+  const [open, setOpen] = useState(() => readPref('neko.todayOpen', 'on') !== 'off');
+  if (!redmine?.configured || !redmine.fetchedAt) return null;
+  const off = offDays(holidays?.list, readLeave(), redmine.time?.leaveDays);
+  const b = todayBrief({ redmine, claudeTime, off, alerts, now });
+  const d = new Date(now);
+  const eodMins = parseClock(eodAt);
+  const evening = b.workday && b.now && eodMins !== null && d.getHours() * 60 + d.getMinutes() >= eodMins
+    && (b.now.short > 0 || b.now.unlogged.length > 0);
+  const late = b.due.filter((x) => x.days < 0).length;
+  const prevTodo = b.prev && (b.prev.short > 0 || b.prev.unlogged.length > 0);
+  const olderMissing = b.missing.filter((x) => x !== b.prev?.date).length;
+  const todo = (late ? 1 : 0) + (b.due.length - late ? 1 : 0) + (b.updates.length ? 1 : 0) + (prevTodo ? 1 : 0) + (evening ? 1 : 0);
+  const tickets = (rows) => rows.slice(0, 3).map((r) => (r.ticket ? `#${r.ticket}` : r.project || '?')).join(', ') + (rows.length > 3 ? ' …' : '');
+  return (
+    <details className={`card today ${evening ? 'is-evening' : ''}`} open={open}
+      onToggle={(e) => { setOpen(e.currentTarget.open); writePref('neko.todayOpen', e.currentTarget.open ? 'on' : 'off'); }}>
+      <summary>
+        <h2>{evening ? '🌙 ก่อนเลิกงาน' : '☀️ วันนี้'} <small>{longDay(b.today)}{!b.workday && ' · วันหยุด'}</small></h2>
+        {todo > 0 ? <span className="due tone-warn">{todo} เรื่อง</span> : <span className="due tone-done">เรียบร้อย</span>}
+      </summary>
+      <ul className="today-list">
+        {b.due.slice(0, 4).map((x) => (
+          <li key={`due-${x.id}`}>
+            <span className={`due tone-${x.days < 0 ? 'error' : 'warn'}`}>{x.days < 0 ? `เลย ${-x.days} วัน` : 'ครบวันนี้'}</span>
+            {x.url ? <a href={x.url} target="_blank" rel="noopener noreferrer">#{x.id}</a> : <span>#{x.id}</span>}
+            <span className="today-subj" title={x.subject}>{x.subject}</span>
+          </li>
+        ))}
+        {b.due.length > 4 && <li><button className="link-btn" onClick={() => onOpen('tasks')}>…อีก {b.due.length - 4} งานที่ถึงกำหนด</button></li>}
+        {b.updates.length > 0 && (
+          <li><button className="link-btn" onClick={() => onOpen('tasks')}>
+            💬 มีอัปเดต {b.updates.length} งาน: {b.updates.slice(0, 4).map((u) => `${u.icon}#${u.id}`).join(' ')}{b.updates.length > 4 ? ' …' : ''}
+          </button></li>
+        )}
+        {prevTodo && (
+          <li><button className="link-btn" onClick={() => onOpen('time')}>
+            ⏱ {dayLabel(b.prev.date, b.today)} ลงไว้ {fmtShort(b.prev.hours)}{b.prev.short > 0 && <> — ขาด <b>{fmtShort(b.prev.short)}</b></>}
+            {b.prev.unlogged.length > 0 && <> · Claude ทำ {tickets(b.prev.unlogged)} ยังไม่ลง</>}
+          </button></li>
+        )}
+        {olderMissing > 0 && (
+          <li><button className="link-btn" onClick={() => onOpen('time')}>📅 ยังไม่ลง log {prevTodo ? 'อีก ' : ''}{olderMissing} วันทำงาน (28 วันล่าสุด)</button></li>
+        )}
+        {b.now && b.workday && (
+          <li className={evening ? 'tone-warn' : ''}><button className="link-btn" onClick={() => onOpen('time')}>
+            {evening ? '🌙' : '⏱'} วันนี้ลงแล้ว {fmtShort(b.now.hours)} / {DAY_HOURS} ชม.
+            {b.now.unlogged.length > 0 && <> · Claude ทำ {tickets(b.now.unlogged)} ยังไม่ลง</>}
+          </button></li>
+        )}
+        {todo === 0 && <li className="muted">✓ ไม่มีงานถึงกำหนด ไม่มีอัปเดตค้าง และลงเวลาเมื่อวานครบแล้ว</li>}
+      </ul>
+    </details>
+  );
+}
+
 function NotifySettings({ notify, sound }) {
   const { on, permission } = notify;
   const note = permission === 'unsupported' ? 'เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือนบนเดสก์ท็อป'
     : permission === 'denied' ? 'เบราว์เซอร์บล็อกการแจ้งเตือนของหน้านี้ไว้ — อนุญาตในการตั้งค่าเว็บไซต์ของเบราว์เซอร์ก่อน แล้วกดเปิดอีกครั้ง'
-    : on ? 'แจ้งเมื่อ Claude รอคุณ / Error / ตอบจบเทิร์น เฉพาะตอนแท็บนี้ถูกซ่อนหรือไม่ได้โฟกัส (ถ้าเห็นหน้าอยู่ ใช้เสียงแทน)'
+    : on ? 'แจ้งเมื่อ Claude รอคุณ / Error / ตอบจบเทิร์น และเมื่องาน Redmine มีอัปเดตจากคนอื่น เฉพาะตอนแท็บนี้ถูกซ่อนหรือไม่ได้โฟกัส (ถ้าเห็นหน้าอยู่ ใช้เสียงแทน)'
     : 'ค่าเริ่มต้นปิด · กดเปิดแล้วเบราว์เซอร์จะถามสิทธิ์ 1 ครั้ง';
   return (
     <>
@@ -295,6 +459,7 @@ const LOOK = {
   theme: { pref: 'neko.theme', attr: 'data-theme', keys: THEMES.map(([k]) => k) },
   palette: { pref: 'neko.palette', attr: 'data-palette', keys: PALETTES.map(([k]) => k) },
   scene: { pref: 'neko.scene', attr: 'data-scene', keys: SCENES.map((x) => x.key) },
+  animal: { pref: 'neko.animal', attr: 'data-animal', keys: ANIMALS.map((x) => x.key) },
 };
 const lookPref = (name) => { const { pref, keys } = LOOK[name]; const v = readPref(pref, keys[0]); return keys.includes(v) ? v : keys[0]; };
 
@@ -306,12 +471,12 @@ function applyLook(name, value) {
 }
 
 function useLook() {
-  const [look, setLook] = useState(() => ({ theme: lookPref('theme'), palette: lookPref('palette'), scene: lookPref('scene') }));
+  const [look, setLook] = useState(() => ({ theme: lookPref('theme'), palette: lookPref('palette'), scene: lookPref('scene'), animal: lookPref('animal') }));
   useEffect(() => { for (const name of Object.keys(LOOK)) applyLook(name, look[name]); }, [look]);
   return { ...look, set: (name, value) => { setLook((l) => ({ ...l, [name]: value })); writePref(LOOK[name].pref, value); } };
 }
 
-function ThemeMenu({ look, notify, sound }) {
+function ThemeMenu({ look, notify, sound, eod }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef(null);
   const btn = useRef(null);
@@ -342,6 +507,10 @@ function ThemeMenu({ look, notify, sound }) {
           <div className="seg" role="group" aria-labelledby="theme-scene">
             {SCENES.map((x) => option('scene', x.key, `ธีมห้อง${x.label}`, <><span aria-hidden="true">{x.icon}</span> {x.label}</>, true))}
           </div>
+          <h3 id="theme-animal">สัตว์ในห้อง</h3>
+          <div className="seg" role="group" aria-labelledby="theme-animal">
+            {ANIMALS.map((x) => option('animal', x.key, `สัตว์ในห้อง ${x.label}`, <><span aria-hidden="true">{x.icon}</span> {x.label}</>))}
+          </div>
           <h3 id="theme-mode">โหมด</h3>
           <div className="seg" role="group" aria-labelledby="theme-mode">
             {THEMES.map(([k, icon, label]) => option('theme', k, `โหมด${label}`, <><span aria-hidden="true">{icon}</span> {label}</>))}
@@ -352,6 +521,13 @@ function ThemeMenu({ look, notify, sound }) {
               <><i className="swatch" style={{ background: color }} aria-hidden="true" /> {label}</>))}
           </div>
           <NotifySettings notify={notify} sound={sound} />
+          <h3 id="set-eod">เตือนก่อนเลิกงาน</h3>
+          <div className="seg" role="group" aria-labelledby="set-eod">
+            <select className="mini-btn" value={eod.at} onChange={(e) => eod.set(e.target.value)} aria-label="เวลาเตือนก่อนเลิกงาน">
+              {EOD_TIMES.map((t) => <option key={t} value={t}>{t === 'off' ? 'ปิด' : `${t} น.`}</option>)}
+            </select>
+          </div>
+          <p className="pop-note">วันทำงาน ถ้าลงเวลาวันนี้ยังไม่ครบ {DAY_HOURS} ชม. หรือมีงานที่ Claude ทำแต่ยังไม่ลง: การ์ด “วันนี้” ขึ้นสีส้ม และเด้งแจ้งเตือน 1 ครั้งต่อวัน (ต้องเปิดแจ้งเตือนบนเดสก์ท็อป และเปิดหน้านี้ค้างไว้){notify.on ? '' : ' — ตอนนี้แจ้งเตือนบนเดสก์ท็อปปิดอยู่'}</p>
         </div>
       )}
     </div>
@@ -359,13 +535,16 @@ function ThemeMenu({ look, notify, sound }) {
 }
 
 // Pill tabs above the side card. Badges give the key numbers at a glance.
-function PanelTabs({ panel, setPanel, cat, agentName, redmine, tokens, now }) {
+function PanelTabs({ panel, setPanel, icon, cat, agentName, redmine, tokens, now, fresh }) {
   const ready = redmine?.configured && redmine.fetchedAt !== null;
   const { active, overdue } = ready ? splitIssues(redmine.issues, now) : { active: [], overdue: 0 };
   const tabs = [
-    ['cat', '🐱', agentName || cat.name, null],
+    ['cat', icon, agentName || cat.name, null],
     ...(redmine ? [
-      ['tasks', '📋', 'งาน', ready ? <em className={`badge ${overdue ? 'tone-error' : 'tone-calm'}`}>{active.length}</em> : null],
+      ['tasks', '📋', 'งาน', ready ? <>
+        <em className={`badge ${overdue ? 'tone-error' : 'tone-calm'}`}>{active.length}</em>
+        {fresh > 0 && <em className="new-dot" title={`มีอัปเดต ${fresh} งาน`} aria-label={`มีอัปเดต ${fresh} งาน`}>{fresh}</em>}
+      </> : null],
       ['time', '⏱', 'เวลา', ready && redmine.time ? <em className="badge tone-done">{fmtShort(redmine.time.todayHours)}</em> : null],
     ] : []),
     ...(tokens ? [['tokens', '🪙', 'โทเคน', tokens.ready ? <em className="badge tone-warn">{formatTokens(tokens.today.counted)}</em> : null]] : []),
@@ -479,7 +658,7 @@ function Details({ cat, session, office, now }) {
 }
 
 // One real agent (a kitten). Only what the hooks told us: type, current tool, times and counts.
-function AgentDetails({ agent, session, now, onBack }) {
+function AgentDetails({ agent, session, now, animal, onBack }) {
   const back = <button className="mini-btn" onClick={onBack}>← กลับไปหัวหน้าโต๊ะ</button>;
   if (!agent) {
     return (
@@ -505,7 +684,7 @@ function AgentDetails({ agent, session, now, onBack }) {
           {agent.tool ? <><b>{agent.tool.name}</b>{agent.tool.summary && <> · {agent.tool.summary}</>} <small className="muted">({ago(agent.tool.startedAt, now)})</small></> : 'ไม่มีเครื่องมือทำงาน — รอบนพรม'}
           {agent.running > 1 && <small className="muted"> · ทำงานพร้อมกัน {agent.running} เครื่องมือ</small>}
         </dd>
-        {desk && (<><dt>นั่งที่โต๊ะ</dt><dd>{desk.name} · {desk.role}</dd></>)}
+        {desk && (<><dt>นั่งที่โต๊ะ</dt><dd>{desk.name} · {roleFor(desk.role, animal)}</dd></>)}
         <dt>ทำงานมาแล้ว</dt>
         <dd>{agent.startedAt ? <>{ago(agent.startedAt, now)} <small className="muted">(เริ่ม {timeOf(agent.startedAt)})</small></>
           : <>ไม่ทราบเวลาเริ่ม <small className="muted">(เห็นครั้งแรก {timeOf(agent.firstSeenAt)})</small></>}</dd>
@@ -561,7 +740,6 @@ function Feed({ feed, sessionId }) {
 
 const PRIORITY_TONE = { 1: 'calm', 2: 'busy', 3: 'warn', 4: 'error', 5: 'error' };
 const DAY_TARGET = 8; // hours, only for the "today" progress bar
-const isResolved = (i) => /resolved|รอปิด/i.test(i.status || '');
 
 
 function dueBadge(dueDate, now) {
@@ -582,7 +760,7 @@ function splitIssues(issues, now) {
   return { active, resolved, overdue, soon };
 }
 
-function Corkboard({ redmine, now, onOpen }) {
+function Corkboard({ redmine, now, fresh, onOpen }) {
   if (!redmine?.configured) return null;
   const hasData = redmine.fetchedAt !== null;
   const { active, overdue } = splitIssues(redmine.issues, now);
@@ -596,8 +774,9 @@ function Corkboard({ redmine, now, onOpen }) {
   };
   return (
     <button className={`corkboard ${redmine.error ? 'is-stale' : ''}`} onClick={go}
-      aria-label={hasData ? `งาน Redmine กำลังทำ ${active.length} งาน${overdue ? `, เลยกำหนด ${overdue}` : ''}` : 'งาน Redmine'}>
+      aria-label={hasData ? `งาน Redmine กำลังทำ ${active.length} งาน${overdue ? `, เลยกำหนด ${overdue}` : ''}${fresh ? `, มีอัปเดต ${fresh}` : ''}` : 'งาน Redmine'}>
       <span className="pin" aria-hidden="true" />
+      {fresh > 0 && <span className="cb-new" aria-hidden="true">{fresh}</span>}
       <span className="note">
         <small className="cb-label">งาน</small>
         <b>{hasData ? active.length : redmine.error ? '!' : '…'}</b>
@@ -608,7 +787,7 @@ function Corkboard({ redmine, now, onOpen }) {
   );
 }
 
-function RedmineCard({ view, redmine, holidays, live, demo, now }) {
+function RedmineCard({ view, redmine, holidays, claudeTime, live, demo, now, alerts, onSeen }) {
   const [cooldown, setCooldown] = useState(false);
   const [note, setNote] = useState('');
   const timer = useRef();
@@ -625,16 +804,26 @@ function RedmineCard({ view, redmine, holidays, live, demo, now }) {
   if (!redmine) return null;
   const { active, resolved, overdue, soon } = splitIssues(redmine.issues, now);
   const subjects = Object.fromEntries(redmine.issues.map((i) => [i.id, i.subject]));
+  const fresh = redmine.issues.filter((i) => alerts[i.id]);
+  const gone = Array.isArray(redmine.gone) ? redmine.gone : [];
+  const row = (i, done) => <IssueRow key={i.id} issue={i} now={now} done={done} alert={alerts[i.id]} onSeen={() => onSeen([i])} />;
 
   return (
     <section className="card redmine" id="redmine-card" tabIndex={-1} aria-label="งาน Redmine ของฉัน">
       <div className="feed-head">
         <h2>{view === 'time' ? '⏱ เวลาทำงาน' : '📋 งานของฉัน'} <small>Redmine</small></h2>
-        {redmine.configured && !demo && (
-          <button className="mini-btn" onClick={refresh} disabled={!live || cooldown || redmine.loading}>
-            {redmine.loading ? 'กำลังดึง…' : '↻ รีเฟรช'}
-          </button>
-        )}
+        <span className="rm-head-btns">
+          {view === 'tasks' && fresh.length > 0 && (
+            <button className="mini-btn rm-readall" onClick={() => onSeen(fresh)} title="ทำเครื่องหมายว่าอ่านแล้วทุกงาน (เก็บในเบราว์เซอร์นี้)">
+              ✓ อ่านทั้งหมด ({fresh.length})
+            </button>
+          )}
+          {redmine.configured && !demo && (
+            <button className="mini-btn" onClick={refresh} disabled={!live || cooldown || redmine.loading}>
+              {redmine.loading ? 'กำลังดึง…' : '↻ รีเฟรช'}
+            </button>
+          )}
+        </span>
       </div>
 
       {!redmine.configured ? (
@@ -654,7 +843,7 @@ function RedmineCard({ view, redmine, holidays, live, demo, now }) {
           )}
 
           <div className={redmine.error ? 'is-stale' : ''}>
-            {view === 'time' && <WorkTime time={redmine.time} error={redmine.timeError} subjects={subjects} base={redmine.baseUrl} holidays={holidays} />}
+            {view === 'time' && <WorkTime time={redmine.time} error={redmine.timeError} subjects={subjects} base={redmine.baseUrl} holidays={holidays} claude={claudeTime} />}
             {view === 'time' && !redmine.time && !redmine.timeError && <p className="muted small">ยังไม่มีข้อมูลเวลา</p>}
 
             {view === 'tasks' && <>
@@ -668,12 +857,32 @@ function RedmineCard({ view, redmine, holidays, live, demo, now }) {
             )}
 
             {redmine.fetchedAt && active.length === 0 && <p className="muted small">ไม่มีงานที่ต้องทำ 🎉</p>}
-            {active.length > 0 && <ul className="issues">{active.map((i) => <IssueRow key={i.id} issue={i} now={now} />)}</ul>}
+            {active.length > 0 && <ul className="issues">{active.map((i) => row(i, false))}</ul>}
 
             {resolved.length > 0 && (
               <details className="rm-resolved">
-                <summary>รอปิด / Resolved ({resolved.length}) — ทำเสร็จแล้ว รอคนตรวจปิด</summary>
-                <ul className="issues">{resolved.map((i) => <IssueRow key={i.id} issue={i} now={now} done />)}</ul>
+                <summary>
+                  รอปิด / Resolved ({resolved.length}) — ทำเสร็จแล้ว รอคนตรวจปิด
+                  {resolved.some((i) => alerts[i.id]) && <i className="new-dot sm" aria-label="มีอัปเดต" />}
+                </summary>
+                <ul className="issues">{resolved.map((i) => row(i, true))}</ul>
+              </details>
+            )}
+            {gone.length > 0 && (
+              <details className="rm-resolved rm-gone">
+                <summary>ออกจากรายการ (ปิด/ย้าย) ({gone.length}) — 24 ชม. ล่าสุด</summary>
+                <ul className="rm-gone-list">
+                  {gone.map((g) => (
+                    <li key={g.id}>
+                      {redmine.baseUrl
+                        ? <a href={`${redmine.baseUrl}/issues/${g.id}`} target="_blank" rel="noopener noreferrer" className="rm-id">#{g.id}</a>
+                        : <span className="rm-id">#{g.id}</span>}
+                      <span className="rm-gone-subj" title={g.subject}>{g.subject}</span>
+                      <small className="muted">{ago(g.at, now)}ที่แล้ว</small>
+                    </li>
+                  ))}
+                </ul>
+                <p className="muted small">ไม่อยู่ในงานเปิดที่ assign ให้คุณแล้ว — ถูกปิด หรือย้ายไปให้คนอื่น</p>
               </details>
             )}
             {redmine.total > redmine.issues.length && <p className="muted small">แสดง {redmine.issues.length} จาก {redmine.total} งาน</p>}
@@ -685,19 +894,53 @@ function RedmineCard({ view, redmine, holidays, live, demo, now }) {
   );
 }
 
-function IssueRow({ issue: i, now, done }) {
+// Copies a ready-made prompt for the user to paste into Claude Code themselves.
+// The page never runs anything: it only puts text on the clipboard.
+function CopyPrompt({ text }) {
+  const [state, setState] = useState('idle');
+  useEffect(() => {
+    if (state === 'idle') return undefined;
+    const t = setTimeout(() => setState('idle'), 1600);
+    return () => clearTimeout(t);
+  }, [state]);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setState('done');
+    } catch {
+      setState('fail');
+    }
+  };
+  const label = state === 'done' ? '✓ คัดลอกแล้ว' : state === 'fail' ? 'คัดลอกไม่ได้' : '📋 คัดลอกคำสั่ง';
+  return (
+    <button type="button" className={`rm-copy ${state}`} onClick={copy}
+      title={`คัดลอก "${text}" ไปวางใน Claude Code`} aria-label={`คัดลอกคำสั่ง ${text}`}>
+      {label}
+    </button>
+  );
+}
+
+function IssueRow({ issue: i, now, done, alert, onSeen }) {
   const due = done ? null : dueBadge(i.dueDate, now);
+  const seen = alert ? () => onSeen() : undefined;
   const hours = i.spentHours || i.estimatedHours
     ? `⏱ ${fmtHours(i.spentHours)}${i.estimatedHours ? ` / ${fmtHours(i.estimatedHours)}` : ''}` : null;
   return (
-    <li className={done ? 'done' : ''}>
+    <li className={`${done ? 'done' : ''} ${alert ? 'has-new' : ''}`}>
       <div className="rm-top">
         <i className={`dot tone-${PRIORITY_TONE[i.priorityId] || 'calm'}`} title={`priority: ${i.priority || '-'}`} />
-        <a href={i.url} target="_blank" rel="noopener noreferrer" className="rm-id">#{i.id}</a>
+        <a href={i.url} target="_blank" rel="noopener noreferrer" className="rm-id" onClick={seen} onAuxClick={seen}>#{i.id}</a>
+        {alert && (
+          <span className={`rm-new kind-${alert.kind}`} title={alertTitle(i)}>
+            <i className="new-dot sm" aria-hidden="true" />{alert.kind === 'new' ? '' : <span aria-hidden="true">{alert.icon} </span>}{alert.text}
+            <button type="button" className="rm-seen" onClick={onSeen} aria-label={`ทำเครื่องหมายว่าอ่าน #${i.id} แล้ว`} title="อ่านแล้ว">✓</button>
+          </span>
+        )}
         <span className="rm-status">{i.status}</span>
         {due && <span className={`due tone-${due.tone}`}>{due.text}</span>}
+        <CopyPrompt text={`ตรวจสอบ Redmine #${i.id}`} />
       </div>
-      <a href={i.url} target="_blank" rel="noopener noreferrer" className="rm-subject" title={i.subject}>{i.subject}</a>
+      <a href={i.url} target="_blank" rel="noopener noreferrer" className="rm-subject" title={i.subject} onClick={seen} onAuxClick={seen}>{i.subject}</a>
       <div className="rm-meta">
         {!done && i.doneRatio !== null && (
           <span className="bar" title={`${i.doneRatio}%`}><span style={{ width: `${i.doneRatio}%` }} /></span>
@@ -708,6 +951,14 @@ function IssueRow({ issue: i, now, done }) {
       </div>
     </li>
   );
+}
+
+// "updated 10:42 by someone else" — only the time and the byMe flag are known, never who or what was written.
+function alertTitle(i) {
+  const la = i.lastActivity;
+  const at = la?.at ? new Date(la.at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : null;
+  if (!la) return 'อัปเดตหลังจากที่คุณเปิดดูล่าสุด';
+  return `${at ? `ล่าสุด ${at} · ` : ''}${la.byMe === false ? 'โดยคนอื่น' : 'ไม่ทราบว่าใครแก้'} — คลิกเลขงานหรือ ✓ เพื่อทำเครื่องหมายว่าอ่านแล้ว`;
 }
 
 const DAY_NAMES = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
@@ -742,7 +993,7 @@ function useLeaveDays() {
   return [leave, toggle];
 }
 
-function WorkTime({ time, error, subjects, base, holidays }) {
+function WorkTime({ time, error, subjects, base, holidays, claude }) {
   const [pick, setPick] = useState(null); // a clicked bar: show only that day's log
   const [leave, toggleLeave] = useLeaveDays();
   if (!time) return error ? <p className="muted small">ดึงเวลาทำงานไม่สำเร็จ: {error}</p> : null;
@@ -757,9 +1008,10 @@ function WorkTime({ time, error, subjects, base, holidays }) {
     else days.push({ spentOn: l.spentOn, items: [l], hours: l.hours });
   }
   const shown = sel ? days.filter((d) => d.spentOn === sel) : days;
-  const off = offDays(holidays?.list, leave);
+  const off = offDays(holidays?.list, leave, time.leaveDays);
   const stats = daily && workStats(daily, time.today, off);
   const selHours = sel ? daily.find((d) => d.date === sel).hours : 0;
+  const activityId = usualActivity(time.log);
   const offNote = stats && stats.offDays.length ? ` · ไม่นับวันหยุด/วันลา ${stats.offDays.length} วัน` : '';
   return (
     <div className="worktime">
@@ -792,6 +1044,8 @@ function WorkTime({ time, error, subjects, base, holidays }) {
         <p className="muted small wt-hint">ยังไม่มีไฟล์วันหยุดนักขัตฤกษ์ (holidays.json — ดู README) · แตะแท่งแล้วกด “วันลา/วันหยุด” เพื่อไม่นับวันนั้น</p>
       )}
       {holidays?.error && <p className="muted small wt-hint">holidays.json: {holidays.error}</p>}
+      {claude && <ClaudeWork claude={claude} date={sel || time.today} today={time.today} log={time.log} names={names} base={base} activityId={activityId} />}
+      {time.commits && <CommitMatch commits={time.commits} names={names} base={base} claude={claude} activityId={activityId} />}
 
       {sel && (
         <div className="wt-filter">
@@ -799,6 +1053,8 @@ function WorkTime({ time, error, subjects, base, holidays }) {
           <span className="wt-filter-btns">
             {off[sel]?.kind === 'holiday'
               ? <span className="off-tag is-holiday" title="จาก holidays.json">🎌 {off[sel].name}</span>
+              : off[sel]?.kind === 'redmine'
+              ? <span className="off-tag" title="ลงเวลา activity “Leave” ใน Redmine — ไม่นับเป็นวันที่ยังไม่ลง log และไม่นับในค่าเฉลี่ย">🏖 {off[sel].name}</span>
               : !isWeekend(sel) && (
                 <button className="mini-btn" aria-pressed={!!off[sel]} onClick={() => toggleLeave(sel)}
                   title="เก็บไว้ในเบราว์เซอร์นี้เท่านั้น — วันนั้นจะไม่นับเป็นวันที่ยังไม่ลง log และไม่นับในค่าเฉลี่ย">
@@ -840,6 +1096,103 @@ function WorkTime({ time, error, subjects, base, holidays }) {
         </details>
       ))}
     </div>
+  );
+}
+
+// This week's tickets that my commits mention (local git log) but I logged no time on in Redmine.
+// "⏱ ลงเวลา" only opens Redmine's own form in a new tab: nothing is logged from here.
+function CommitMatch({ commits: c, names, base, claude, activityId }) {
+  const tickets = Array.isArray(c.tickets) ? c.tickets : [];
+  const span = (days) => (days.length > 1 ? `${dmy(days[0])}–${dmy(days.at(-1))}` : dmy(days[0]));
+  return (
+    <details className="wt-commits" open={tickets.length > 0}>
+      <summary>
+        <span>🔗 มี commit แต่ยังไม่ลงเวลา <small className="muted">สัปดาห์นี้ ตั้งแต่ {dmy(c.from)}</small></span>
+        <span className="wt-commit-sum">
+          {tickets.length > 0
+            ? <span className="due tone-error">{tickets.length} งาน</span>
+            : c.checked > 0 && <span className="due tone-done">ครบ</span>}
+        </span>
+      </summary>
+      {tickets.length === 0 && (
+        <p className="muted small">{c.checked > 0 ? `ลงเวลาครบทุกงานที่ commit สัปดาห์นี้ (${c.checked} งาน)` : 'สัปดาห์นี้ยังไม่มี commit ที่อ้างเลขงาน'}</p>
+      )}
+      <ul className="wt-commit-list">
+        {tickets.map((t) => (
+          <li key={t.id}>
+            <div className="wt-issue">
+              {base
+                ? <a href={`${base}/issues/${t.id}`} target="_blank" rel="noopener noreferrer">#{t.id}</a>
+                : <span>#{t.id}</span>}
+              <span className="wt-subj" title={names[t.id] || ''}>
+                {names[t.id] || (t.found === false ? <i className="muted">ไม่พบใน Redmine (เลขผิด หรือไม่มีสิทธิ์ดู)</i> : '')}
+              </span>
+            </div>
+            <small className="muted wt-note">{t.repos.join(', ')} · {t.commits} commit ({span(t.days)})</small>
+            {base && (() => {
+              // pre-filled with the last commit day and, when known, how long Claude worked on it that day
+              const hours = suggestHours(claudeMs(claude, t.lastCommit, t.id));
+              return (
+                <a className="mini-btn wt-log-btn" href={logTimeUrl(base, { issueId: t.id, date: t.lastCommit, hours, activityId })} target="_blank" rel="noopener noreferrer"
+                  title={`เปิดฟอร์มลงเวลาของ Redmine ในแท็บใหม่ — กรอกวันที่ ${dmy(t.lastCommit)}${hours ? ` และ ${fmtHours(hours)} (เวลาที่ Claude ทำ)` : ''} ไว้ให้ ตรวจแล้วกดบันทึกเอง`}>⏱ ลงเวลา</a>
+              );
+            })()}
+          </li>
+        ))}
+      </ul>
+      <p className="muted small">
+        จาก git log ของ {c.scanned} repo ({c.source === 'dev-work-report' ? 'รายการ repo ของ dev-work-report' : 'git.json'}) เทียบกับเวลาที่คุณลงสัปดาห์นี้
+        {c.checked > 0 && <> · commit อ้าง {c.checked} งาน</>}
+        {c.noTicket > 0 && <> · {c.noTicket} commit ไม่ได้อ้างเลขงาน</>}
+        {c.missing?.length > 0 && <> · อ่านไม่ได้: {c.missing.join(', ')}</>}
+      </p>
+    </details>
+  );
+}
+
+const TICKET_FROM = {
+  prompt: 'เลขงานจาก prompt ล่าสุดที่อ้างเลขงาน',
+  branch: 'เลขงานจากชื่อ git branch',
+  commit: 'เลขงานจาก commit ล่าสุดของ branch นี้',
+};
+
+// How long Claude worked (working / using a tool, from hook events) per ticket on one day,
+// next to what I logged. "⏱ ลงเวลา" opens Redmine's own form pre-filled: nothing is logged from here.
+function ClaudeWork({ claude, date, today, log, names, base, activityId }) {
+  const rows = claudeDay(claude, date, log);
+  const sum = rows.reduce((n, r) => n + r.ms, 0) / 3_600_000;
+  const todo = rows.filter((r) => r.suggest).length;
+  return (
+    <details className="wt-commits wt-claude" open={rows.length > 0}>
+      <summary>
+        <span>🐾 เวลาที่ Claude ทำงาน <small className="muted">{dayLabel(date, today)}</small></span>
+        <span className="wt-commit-sum">
+          {rows.length > 0 && <span className="muted small">{fmtShort(sum)}</span>}
+          {todo > 0 ? <span className="due tone-warn">ยังไม่ลง {todo}</span> : rows.length > 0 && <span className="due tone-done">ครบ</span>}
+        </span>
+      </summary>
+      {rows.length === 0 && <p className="muted small">ยังไม่มีเวลาทำงานของ Claude ในวันนั้น</p>}
+      <ul className="wt-commit-list">
+        {rows.map((r) => (
+          <li key={r.ticket ?? `p:${r.project}`}>
+            <div className="wt-issue">
+              {r.ticket
+                ? <>{base ? <a href={`${base}/issues/${r.ticket}`} target="_blank" rel="noopener noreferrer">#{r.ticket}</a> : <span>#{r.ticket}</span>}
+                    <span className="wt-subj" title={names[r.ticket] || ''}>{names[r.ticket] || ''}</span></>
+                : <span className="muted" title="ไม่รู้เลขงาน: ตั้งชื่อ branch ให้มีเลขงาน หรือพิมพ์ #เลขงาน ใน prompt">ไม่ทราบเลขงาน · {r.project || 'unknown'}</span>}
+            </div>
+            <small className="muted wt-note">
+              Claude {fmtHours(r.ms / 3_600_000)}{r.ticket && <> · ลงแล้ว {r.logged ? fmtHours(r.logged) : '0'}</>}
+            </small>
+            {r.suggest && base ? (
+              <a className="mini-btn wt-log-btn" href={logTimeUrl(base, { issueId: r.ticket, date, hours: r.suggest, activityId })} target="_blank" rel="noopener noreferrer"
+                title={`เปิดฟอร์มลงเวลาของ Redmine — กรอก ${fmtHours(r.suggest)} วันที่ ${dmy(date)} ไว้ให้ (ปัดเป็น 15 นาที) ตรวจแล้วกดบันทึกเอง`}>⏱ ลง {fmtShort(r.suggest)}</a>
+            ) : r.ticket && !r.suggest ? <span className="wt-log-btn muted small" title="ลงเวลาไว้ครบหรือมากกว่าเวลาที่ Claude ทำแล้ว">✓</span> : null}
+          </li>
+        ))}
+      </ul>
+      <p className="muted small">นับเฉพาะช่วงที่ Claude กำลังทำงาน/ใช้เครื่องมือ (ไม่นับตอนรอคุณ) · หลาย session ในงานเดียวกันพร้อมกันนับครั้งเดียว · เป็นแค่ตัวช่วยประมาณ ไม่ใช่เวลาทำงานของคุณทั้งหมด</p>
+    </details>
   );
 }
 

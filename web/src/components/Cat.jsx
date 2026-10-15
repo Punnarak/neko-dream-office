@@ -7,6 +7,94 @@ const PINK = '#f7a8be';
 const HEADWEAR = ['Pudding', 'Luna']; // hidden when the scene gives every cat a hat
 const INK = '#4a3b52';
 
+// ---- animal parts (animals.js). Drawn in the desk cat's coordinates (head centre 60,57);
+// the kitten reuses them through KITTEN_HEAD, its head being a little bigger and 1px lower.
+const mirror = (el) => <>{el}<g transform="translate(120 0) scale(-1 1)">{el}</g></>;
+const KITTEN_HEAD = 'translate(60 58) scale(1.07 1.09) translate(-60 -57)';
+
+// Ears behind the head.
+const EARS = {
+  cat: (fur, line) => <>
+    <path d="M36 46L40 22l15 14z" fill={fur} stroke={line} strokeWidth="1.2" strokeLinejoin="round" />
+    <path d="M84 46L80 22 65 36z" fill={fur} stroke={line} strokeWidth="1.2" strokeLinejoin="round" />
+    <path d="M40 40l2-11 7 7z M80 40l-2-11-7 7z" fill={PINK} />
+  </>,
+  fox: (fur, line) => mirror(<>
+    <path d="M34 48L35 13l22 21z" fill={fur} stroke={line} strokeWidth="1.2" strokeLinejoin="round" />
+    <path d="M38 41l.5-19 11 11z" fill="#fff6ec" opacity=".85" />
+    <path d="M35 21l0-8 7 7z" fill={line} opacity=".55" />
+  </>),
+  bear: (fur, line) => mirror(<>
+    <circle cx="38" cy="37" r="9" fill={fur} stroke={line} strokeWidth="1.2" />
+    <circle cx="38.5" cy="37.5" r="4.6" fill={PINK} opacity=".7" />
+  </>),
+  bunny: (fur, line) => mirror(<>
+    <ellipse cx="48" cy="21" rx="7" ry="17" transform="rotate(-10 48 21)" fill={fur} stroke={line} strokeWidth="1.2" />
+    <ellipse cx="48" cy="22" rx="3.4" ry="12.5" transform="rotate(-10 48 22)" fill={PINK} opacity=".8" />
+  </>),
+  dog: () => null, // floppy ears hang in front of the head: FRONT_EARS
+};
+
+// Ears in front of the head (dog only).
+const FRONT_EARS = {
+  dog: (fur, line, accent) => mirror(
+    <path d="M38 37q-11 1-12 19q0 10 7 9q7-2 9-14z" fill={accent} stroke={line} strokeWidth="1.2" strokeLinejoin="round" />,
+  ),
+};
+
+// Nose + mouth. `sad` = the error frown.
+const smile = (line, sad) => (sad ? 'M55 70q5-4 10 0' : 'M55 67q2.5 3 5 0q2.5 3 5 0');
+const MUZZLES = {
+  cat: (line, sad) => <>
+    <path d="M58 63h4l-2 2.5z" fill={PINK} />
+    <path d={smile(line, sad)} fill="none" stroke={line} strokeWidth="1.4" strokeLinecap="round" />
+  </>,
+  dog: (line, sad) => <>
+    <ellipse cx="60" cy="66" rx="10" ry="7" fill="#fff" opacity=".5" />
+    <ellipse cx="60" cy="63" rx="3.8" ry="2.8" fill={INK} />
+    <path d={`M60 65.5v1.5 ${smile(line, sad)}`} fill="none" stroke={line} strokeWidth="1.4" strokeLinecap="round" />
+  </>,
+  bear: (line, sad) => <>
+    <ellipse cx="60" cy="66" rx="9" ry="7" fill="#fff7ec" opacity=".75" />
+    <ellipse cx="60" cy="62.8" rx="3.4" ry="2.5" fill={INK} />
+    <path d={`M60 65v2 ${smile(line, sad)}`} fill="none" stroke={line} strokeWidth="1.4" strokeLinecap="round" />
+  </>,
+  bunny: (line, sad) => <>
+    <path d="M58 63h4l-2 2.5z" fill={PINK} />
+    <rect x="58" y="68" width="4" height="3.2" rx=".8" fill="#fff" stroke={line} strokeWidth=".8" />
+    <path d={sad ? 'M55 70q5-4 10 0' : 'M60 65.5v2.5M60 68q-3 2.2-5 0M60 68q3 2.2 5 0'} fill="none" stroke={line} strokeWidth="1.3" strokeLinecap="round" />
+  </>,
+  fox: (line, sad) => <>
+    <path d="M33 60q14 1 27 9q13-8 27-9q-4 15-27 17q-23-2-27-17z" fill="#fff" opacity=".7" />
+    <ellipse cx="60" cy="63" rx="3" ry="2.2" fill={INK} />
+    <path d={`M60 65v1.5 ${smile(line, sad)}`} fill="none" stroke={line} strokeWidth="1.4" strokeLinecap="round" />
+  </>,
+};
+
+// Tails: desk cat (sitting) and kitten (standing) have different spots.
+const TAILS = {
+  cat: { desk: (fur) => <path d="M84 92q22-2 16-24" fill="none" stroke={fur} strokeWidth="7" strokeLinecap="round" />,
+    kitten: (fur) => <path d="M78 104q20 0 18-20" fill="none" stroke={fur} strokeWidth="6" strokeLinecap="round" /> },
+  dog: { desk: (fur) => <path className="wag" d="M84 92q14-2 13-15" fill="none" stroke={fur} strokeWidth="6" strokeLinecap="round" />,
+    kitten: (fur) => <path className="wag" d="M78 102q13 0 12-12" fill="none" stroke={fur} strokeWidth="5" strokeLinecap="round" /> },
+  fox: { desk: (fur, line) => <>
+    <path d="M82 97q27 2 22-28q-5-4-8 1q1 17-15 18z" fill={fur} stroke={line} strokeWidth="1.1" strokeLinejoin="round" />
+    <path d="M104 69q-5-4-8 1l1.5 5q5-2 6.5-6z" fill="#fff" />
+  </>, kitten: (fur, line) => <>
+    <path d="M76 106q25 2 20-25q-5-3-7 1q1 15-14 16z" fill={fur} stroke={line} strokeWidth="1.1" strokeLinejoin="round" />
+    <path d="M96 81q-5-3-7 1l1.4 4.5q4.5-1.8 5.6-5.5z" fill="#fff" />
+  </> },
+  bunny: { desk: (fur, line) => <circle cx="86" cy="98" r="6.5" fill="#fff" stroke={line} strokeWidth="1" />,
+    kitten: (fur, line) => <circle cx="80" cy="105" r="5.5" fill="#fff" stroke={line} strokeWidth="1" /> },
+  bear: { desk: (fur, line) => <circle cx="86" cy="98" r="5" fill={fur} stroke={line} strokeWidth="1" />,
+    kitten: (fur, line) => <circle cx="80" cy="105" r="4.2" fill={fur} stroke={line} strokeWidth="1" /> },
+};
+
+const partsOf = (animal) => {
+  const a = EARS[animal] ? animal : 'cat';
+  return { ears: EARS[a], frontEars: FRONT_EARS[a], muzzle: MUZZLES[a], tail: TAILS[a] };
+};
+
 function Eyes({ pose }) {
   if (pose === 'sleep' || pose === 'off') {
     return (
@@ -123,27 +211,26 @@ function DeskProp({ name, accent, active }) {
   }
 }
 
-export function Cat({ cat, pose, scene }) {
+export function Cat({ cat, pose, scene, animal = 'cat' }) {
   const busy = pose === 'busy';
+  const p = partsOf(animal);
   const sc = DECOR[scene]?.cat || {}; // scene accessories/desk/props; office = none of these
   const Prop = sc.props?.[cat.name];
   return (
     <svg viewBox="0 0 120 120" className={`cat pose-${pose}`} role="img" aria-label={`${cat.name} ${cat.role}`}>
       {sc.back}
       {/* tail */}
-      <path d="M84 92q22-2 16-24" fill="none" stroke={cat.fur} strokeWidth="7" strokeLinecap="round" />
+      {p.tail.desk(cat.fur, INK)}
       {/* body + head */}
       <ellipse cx="60" cy="88" rx="25" ry="19" fill={cat.fur} stroke={INK} strokeWidth="1.2" />
       {sc.body?.(cat.accent)}
-      <path d="M36 46L40 22l15 14z" fill={cat.fur} stroke={INK} strokeWidth="1.2" strokeLinejoin="round" />
-      <path d="M84 46L80 22 65 36z" fill={cat.fur} stroke={INK} strokeWidth="1.2" strokeLinejoin="round" />
-      <path d="M40 40l2-11 7 7z M80 40l-2-11-7 7z" fill={PINK} />
+      {p.ears(cat.fur, INK)}
       <ellipse cx="60" cy="57" rx="28" ry="23" fill={cat.fur} stroke={INK} strokeWidth="1.2" />
+      {p.frontEars?.(cat.fur, INK, cat.accent)}
       <ellipse cx="41" cy="66" rx="5" ry="3" fill={PINK} opacity=".55" />
       <ellipse cx="79" cy="66" rx="5" ry="3" fill={PINK} opacity=".55" />
+      {p.muzzle(INK, pose === 'error')}
       <Eyes pose={pose} />
-      <path d="M58 63h4l-2 2.5z" fill={PINK} />
-      <path d={pose === 'error' ? 'M55 70q5-4 10 0' : 'M55 67q2.5 3 5 0q2.5 3 5 0'} fill="none" stroke={INK} strokeWidth="1.4" strokeLinecap="round" />
       {!(sc.hat && HEADWEAR.includes(cat.name)) && <Accessory name={cat.name} accent={cat.accent} />}
       {sc.hat?.(cat.accent)}
       {/* desk: lit top face receding toward the wall + shaded front face */}
@@ -184,7 +271,8 @@ export function kittenFur(agent) {
 // Only the body widens — the head, the hit area and the kitten's footprint in the scene stay the same.
 const KITTEN_BODY = [[15, 13], [19, 14], [23, 15], [26.5, 16], [30, 17.5]];
 
-export function Kitten({ agent, pose, scene, chub = null }) {
+export function Kitten({ agent, pose, scene, chub = null, animal = 'cat' }) {
+  const p = partsOf(animal);
   const [fur, accent] = kittenFur(agent);
   const dark = agent.main;
   const line = dark ? '#2b2131' : INK;
@@ -195,7 +283,7 @@ export function Kitten({ agent, pose, scene, chub = null }) {
     <svg viewBox="14 8 92 108" className={`kitten pose-${pose} chub-${chub ?? 'unknown'}`} aria-hidden="true">
       {sc.back}
       {/* tail — follows the side of the body */}
-      <path className="tail" style={{ transform: `translateX(${rx - 19}px)` }} d="M78 104q20 0 18-20" fill="none" stroke={fur} strokeWidth="6" strokeLinecap="round" />
+      <g className="tail" style={{ transform: `translateX(${rx - 19}px)` }}>{p.tail.kitten(fur, line)}</g>
       {/* body (width = real token usage) + belly + paws */}
       <ellipse className="bod" cx="60" cy="98" style={{ rx: `${rx}px`, ry: `${ry}px` }} rx={rx} ry={ry} fill={fur} stroke={line} strokeWidth="1.2" />
       {chub >= 2 && <ellipse className="bod" cx="60" cy="101" style={{ rx: `${rx * 0.55}px`, ry: `${ry * 0.55}px` }} rx={rx * 0.55} ry={ry * 0.55} fill="#fff" opacity={dark ? 0.16 : 0.42} />}
@@ -203,17 +291,15 @@ export function Kitten({ agent, pose, scene, chub = null }) {
       <ellipse className="paw paw-r" style={{ cx: `${60 + pawX}px` }} cx={60 + pawX} cy="110" rx="5" ry="3.5" fill={fur} stroke={line} strokeWidth="1" />
       {sc.body}
       {/* ears + head */}
-      <path d="M33 48L36 20l18 15z" fill={fur} stroke={line} strokeWidth="1.2" strokeLinejoin="round" />
-      <path d="M87 48L84 20 66 35z" fill={fur} stroke={line} strokeWidth="1.2" strokeLinejoin="round" />
-      <path d="M37 40l1.5-12 8 7z M83 40l-1.5-12-8 7z" fill={PINK} />
+      <g transform={KITTEN_HEAD}>{p.ears(fur, line)}</g>
       <ellipse cx="60" cy="58" rx="30" ry="25" fill={fur} stroke={line} strokeWidth="1.2" />
+      {p.frontEars && <g transform={KITTEN_HEAD}>{p.frontEars(fur, line, accent)}</g>}
       {dark && <path d="M60 36l-6 10h12z" fill="#fff" opacity=".9" />}
       <ellipse cx="40" cy="67" rx="5" ry="3" fill={PINK} opacity=".6" />
       <ellipse cx="80" cy="67" rx="5" ry="3" fill={PINK} opacity=".6" />
       {dark && pose !== 'off' && <g fill="#fff"><circle cx="48" cy="57" r="7" /><circle cx="72" cy="57" r="7" /></g>}
+      <g transform="translate(0 1)">{p.muzzle(dark ? '#fff' : INK, false)}</g>
       <Eyes pose={pose} />
-      <path d="M58 64h4l-2 2.5z" fill={PINK} />
-      <path d="M55 68q2.5 3 5 0q2.5 3 5 0" fill="none" stroke={dark ? '#fff' : INK} strokeWidth="1.4" strokeLinecap="round" />
       {agent.main ? (
         <g>
           <path d="M45 30l4-12 6 8 5-11 5 11 6-8 4 12z" fill={accent} stroke={line} strokeWidth="1" strokeLinejoin="round" />

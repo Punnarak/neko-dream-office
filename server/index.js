@@ -12,6 +12,7 @@ import { RedmineFeed } from './redmine.js';
 import { UsageTracker, subagentTranscript } from './usage.js';
 import { DailyTokens } from './tokens.js';
 import { HolidayFile } from './holidays.js';
+import { ClaudeTime } from './claudetime.js';
 
 const HOST = process.env.NEKO_HOST || '127.0.0.1';
 const PORT = Number(process.env.NEKO_PORT || 4777);
@@ -53,8 +54,19 @@ function trackUsage(payload) {
   }
   usage.retain((id) => state.sessions.has(id));
 }
+// How long Claude worked per Redmine ticket and day (saved to ~/.config/neko-dream-office/claude-time.json).
+const claudeTime = new ClaudeTime({
+  onUpdate: (data) => broadcast({ type: 'claudeTime', claudeTime: data }),
+  onTicket: (sessionId, ticket) => {
+    const session = state.setTicket(sessionId, ticket);
+    if (session) broadcast({ type: 'session', session });
+  },
+});
+claudeTime.load();
+
 const redmine = new RedmineFeed({
   intervalMs: Number(process.env.NEKO_REDMINE_INTERVAL || 300) * 1000,
+  extraIssueIds: () => claudeTime.ticketIds(),
   onUpdate: (data) => broadcast({ type: 'redmine', redmine: data }),
 });
 
@@ -81,7 +93,7 @@ function setActive(active) {
     tick = null;
   }
 }
-const fullState = () => ({ ...state.snapshot(), redmine: redmine.snapshot(), tokens: tokens.snapshot(), holidays: holidays.snapshot() });
+const fullState = () => ({ ...state.snapshot(), redmine: redmine.snapshot(), tokens: tokens.snapshot(), holidays: holidays.snapshot(), claudeTime: claudeTime.snapshot() });
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -136,11 +148,13 @@ async function handleHook(req, res) {
   send(res, 200, '{}');
   if (!change) return;
   trackUsage(payload);
+  claudeTime.observe(payload, change.session);
+  const session = state.publicSession(change.session.id) || change.session; // may now carry the ticket
   // a finished turn is when today's token count grows; still at most once per tick and only with a page open
   if (tick && (change.item.event === 'Stop' || change.item.event === 'SubagentStop')) void tokens.refreshIfDue(TOKENS_MS - 5000);
   // Field NAMES only — never values, which can hold prompts, paths or tool output.
   if (DEBUG) console.log(`[neko] ${change.item.event} ${change.session.id.slice(0, 8)} ${change.session.status} agent=${typeof payload.agent_id === 'string' ? payload.agent_id.slice(0, 8) : '-'} fields=${Object.keys(payload).sort().join(',')}`);
-  broadcast({ type: 'event', session: change.session, item: change.item });
+  broadcast({ type: 'event', session, item: change.item });
 }
 
 // The page's refresh button. Only our own pages may call it; it only re-fetches the issue list.
@@ -253,6 +267,7 @@ function shutdown() {
   usage.stop();
   setActive(false);
   tokens.stop();
+  claudeTime.stop();
   for (const ws of wss.clients) ws.close(1001, 'server shutdown');
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();

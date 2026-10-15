@@ -34,7 +34,9 @@ export const initialState = {
   redmine: null,      // Redmine issues pushed by the backend (null = not received yet)
   tokens: null,       // daily token totals across all transcripts (null = not received yet)
   holidays: null,     // { list: [{ date, name }], configured, error } from the optional holidays.json
+  claudeTime: null,   // { days: [{ date, items: [{ ticket, project, ms }] }] } — how long Claude worked per ticket
   lastEvent: null,    // the newest live hook event; snapshots never set it, so reloads stay silent
+  redmineLive: false, // true once Redmine data came as a live push (not a snapshot): only then may it alert
 };
 
 export function reducer(state, action) {
@@ -46,7 +48,7 @@ export function reducer(state, action) {
     case 'snapshot': {
       const sessions = {};
       for (const s of action.sessions) sessions[s.id] = s;
-      return { ...state, conn: 'live', serverStartedAt: action.serverStartedAt, sessions, feed: action.feed.slice(-FEED_LIMIT), redmine: action.redmine ?? null, tokens: action.tokens ?? null, holidays: action.holidays ?? null, lastEvent: null, lastMessageAt: Date.now() };
+      return { ...state, conn: 'live', serverStartedAt: action.serverStartedAt, sessions, feed: action.feed.slice(-FEED_LIMIT), redmine: action.redmine ?? null, redmineLive: false, tokens: action.tokens ?? null, holidays: action.holidays ?? null, claudeTime: action.claudeTime ?? null, lastEvent: null, lastMessageAt: Date.now() };
     }
     case 'event': {
       const feed = state.feed.length >= FEED_LIMIT ? state.feed.slice(1 - FEED_LIMIT) : state.feed.slice();
@@ -56,11 +58,13 @@ export function reducer(state, action) {
     case 'session': // a session changed without a new hook event (e.g. token usage was re-read)
       return { ...state, sessions: { ...state.sessions, [action.session.id]: action.session }, lastMessageAt: Date.now() };
     case 'redmine':
-      return { ...state, redmine: action.redmine, lastMessageAt: Date.now() };
+      return { ...state, redmine: action.redmine, redmineLive: true, lastMessageAt: Date.now() };
     case 'tokens':
       return { ...state, tokens: action.tokens, lastMessageAt: Date.now() };
     case 'holidays':
       return { ...state, holidays: action.holidays, lastMessageAt: Date.now() };
+    case 'claudeTime':
+      return { ...state, claudeTime: action.claudeTime, lastMessageAt: Date.now() };
     default:
       return state;
   }
@@ -252,9 +256,12 @@ export const isWeekend = (date) => { const w = dowOf(date); return w === 0 || w 
 
 // Days that are not working days for the time tab: public holidays (holidays.json) and this browser's
 // own leave days (localStorage). -> { 'YYYY-MM-DD': { kind: 'holiday' | 'leave', name } }
-export function offDays(holidays, leave = []) {
+// `rmLeave` = Redmine leave days from the backend (time.leaveDays: [{ date, hours }]); they win over
+// this browser's manual leave (not toggleable off), and holidays win over both.
+export function offDays(holidays, leave = [], rmLeave = []) {
   const out = {};
   for (const d of leave) if (typeof d === 'string') out[d] = { kind: 'leave', name: 'วันลา/วันหยุดส่วนตัว' };
+  for (const d of rmLeave || []) if (typeof d?.date === 'string') out[d.date] = { kind: 'redmine', name: 'ลา (Redmine)', hours: Number(d.hours) || 0 };
   for (const h of holidays || []) if (h?.date) out[h.date] = { kind: 'holiday', name: h.name || 'วันหยุด' };
   return out;
 }
@@ -327,4 +334,186 @@ export function fmtHours(h) {
 export function fmtShort(h) {
   const [hh, mm] = hm(h);
   return hh ? `${hh}:${String(mm).padStart(2, '0')} ชม.` : `${mm} น.`;
+}
+
+// ---- Time Claude worked per ticket (🐾) and Redmine's own "log time" form ----
+
+const HOUR_MS = 3_600_000;
+const COVERED_MS = 7.5 * 60_000; // less than this still unlogged = already covered
+
+// Hours to suggest in the form: rounded to 15 minutes, never 0 for real work.
+export function suggestHours(ms) {
+  return ms > 0 ? Math.max(0.25, Math.round(ms / 900_000) / 4) : null;
+}
+
+// Redmine's new-time-entry form, pre-filled. Nothing is logged until you press save there.
+export function logTimeUrl(base, { issueId, date, hours, activityId } = {}) {
+  if (!base) return null;
+  const q = new URLSearchParams();
+  if (date) q.set('time_entry[spent_on]', date);
+  if (hours) q.set('time_entry[hours]', String(hours));
+  if (activityId) q.set('time_entry[activity_id]', String(activityId));
+  const qs = q.toString();
+  return `${base}${issueId ? `/issues/${issueId}` : ''}/time_entries/new${qs ? `?${qs}` : ''}`;
+}
+
+// The activity I log most often (never "Leave"), as the form's default.
+export function usualActivity(log) {
+  const count = new Map();
+  for (const l of log || []) if (l.activityId && l.activity !== 'Leave') count.set(l.activityId, (count.get(l.activityId) || 0) + 1);
+  let best = null;
+  for (const [id, n] of count) if (best === null || n > count.get(best)) best = id;
+  return best;
+}
+
+// One day of Claude's work next to what I logged that day.
+// [{ ticket, project, ms, logged (hours | null without a ticket), suggest (hours still to log | null) }]
+export function claudeDay(claudeTime, date, log) {
+  const day = claudeTime?.days?.find((d) => d.date === date);
+  if (!day) return [];
+  const logged = new Map();
+  for (const l of log || []) if (l.spentOn === date && l.issueId) logged.set(l.issueId, (logged.get(l.issueId) || 0) + l.hours);
+  return day.items.filter((i) => i.ms >= 60_000).map((i) => {
+    const done = i.ticket ? logged.get(i.ticket) || 0 : null;
+    const left = i.ms - (done || 0) * HOUR_MS;
+    return { ...i, logged: done, suggest: left >= COVERED_MS ? suggestHours(left) : null };
+  });
+}
+
+// Claude's time on one ticket on one day, in ms (0 when unknown).
+export function claudeMs(claudeTime, date, ticket) {
+  return claudeTime?.days?.find((d) => d.date === date)?.items.find((i) => i.ticket === ticket)?.ms || 0;
+}
+
+// ---- Today card (เช้า) and the end-of-day reminder (เย็น): only data the page already has ----
+
+export const DAY_HOURS = 8;
+export const isResolved = (i) => /resolved|รอปิด/i.test(i?.status || '');
+const dayOf = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+export const isWorkday = (date, off = {}) => !isWeekend(date) && !off[date];
+
+// The working day before `today` (skipping weekends, holidays and leave), within two weeks.
+export function prevWorkday(today, off = {}) {
+  const [y, m, d] = today.split('-').map(Number);
+  for (let i = 1; i <= 14; i++) {
+    const date = dayOf(new Date(y, m - 1, d - i).getTime());
+    if (isWorkday(date, off)) return date;
+  }
+  return null;
+}
+
+// Logged hours and still-unlogged Claude work of one day.
+function dayStatus(time, claudeTime, date) {
+  const hours = time?.daily?.find((x) => x.date === date)?.hours ?? 0;
+  const unlogged = claudeDay(claudeTime, date, time?.log).filter((r) => r.suggest);
+  return { date, hours, short: Math.max(0, DAY_HOURS - hours), unlogged };
+}
+
+// What needs me today. `alerts` = rmAlerts(...) (issue id -> alert). Every part may be empty.
+export function todayBrief({ redmine, claudeTime, off = {}, alerts = {}, now }) {
+  const time = redmine?.time;
+  const today = time?.today || dayOf(now);
+  const due = [];
+  for (const i of redmine?.issues || []) {
+    if (isResolved(i)) continue;
+    const d = daysUntil(i.dueDate, now);
+    if (d !== null && d <= 0) due.push({ id: i.id, subject: i.subject, url: i.url, days: d });
+  }
+  due.sort((a, b) => a.days - b.days || a.id - b.id);
+  const subjects = Object.fromEntries((redmine?.issues || []).map((i) => [i.id, i.subject]));
+  const updates = Object.entries(alerts).map(([id, a]) => ({ id: Number(id), subject: subjects[id], icon: a.icon, text: a.text }));
+  const prev = time?.daily ? prevWorkday(today, off) : null;
+  return {
+    today,
+    workday: isWorkday(today, off),
+    due,
+    updates,
+    prev: prev && time.daily.some((x) => x.date === prev) ? dayStatus(time, claudeTime, prev) : null,
+    now: time ? dayStatus(time, claudeTime, today) : null,
+    missing: time?.daily ? workStats(time.daily, today, off).missing : [],
+  };
+}
+
+// "16:30" -> minutes after midnight, or null for "off" / garbage.
+export function parseClock(v) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v || '');
+  return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : null;
+}
+
+// The end-of-day reminder, once a working day after `at` ("17:00"), when something is still open:
+// fewer than 8 h logged today, or Claude worked on a ticket I have not logged. null = nothing to say.
+export function endOfDay({ redmine, claudeTime, off = {}, now, at, done }) {
+  const mins = parseClock(at);
+  const time = redmine?.time;
+  if (mins === null || !time?.daily) return null;
+  const d = new Date(now);
+  const today = dayOf(now);
+  if (time.today !== today || done === today || !isWorkday(today, off) || d.getHours() * 60 + d.getMinutes() < mins) return null;
+  const st = dayStatus(time, claudeTime, today);
+  if (st.short <= 0 && !st.unlogged.length) return null;
+  const parts = [`ลงเวลาวันนี้ ${fmtShort(st.hours)} / ${DAY_HOURS} ชม.`];
+  if (st.unlogged.length) {
+    const list = st.unlogged.slice(0, 3).map((r) => (r.ticket ? `#${r.ticket} ${fmtShort(r.suggest)}` : `${r.project || 'ไม่ทราบเลขงาน'} ${fmtShort(r.suggest)}`));
+    parts.push(`Claude ทำยังไม่ลง: ${list.join(', ')}${st.unlogged.length > 3 ? ' …' : ''}`);
+  }
+  return { date: today, title: '⏱ ก่อนเลิกงาน', body: parts.join(' · '), tag: 'neko-eod' };
+}
+
+// ---- Redmine "มีอัปเดต": per-browser seen map { issueId: updatedOn } vs. what the backend reports ----
+
+export const RM_ALERT = {
+  new:      { icon: '🆕', text: 'ใหม่', say: 'งานใหม่' },
+  comment:  { icon: '💬', text: 'มีคนตอบ', say: 'มีคนตอบ' },
+  assignee: { icon: '👤', text: 'มอบหมายใหม่', say: 'มอบหมายใหม่' },
+  status:   { icon: '🔄', text: 'เปลี่ยนสถานะ', say: 'เปลี่ยนสถานะ' },
+  priority: { icon: '❗', text: 'เปลี่ยนความสำคัญ', say: 'เปลี่ยนความสำคัญ' },
+  due:      { icon: '📅', text: 'เปลี่ยนกำหนดส่ง', say: 'เปลี่ยนกำหนดส่ง' },
+  other:    { icon: '✏️', text: 'อัปเดต', say: 'มีอัปเดต' },
+};
+const RM_SEEN_MAX = 300;
+
+// null = nothing for me to look at. "new" = not in seen; "updated" = changed since seen and not by me.
+export function rmAlert(issue, seen) {
+  if (!issue || !seen || typeof issue.updatedOn !== 'string') return null;
+  const la = issue.lastActivity;
+  if (la?.byMe === true) return null;
+  const mine = seen[issue.id];
+  const kind = mine === undefined ? 'new' : issue.updatedOn > mine ? (RM_ALERT[la?.kinds?.[0]] ? la.kinds[0] : 'other') : null;
+  return kind ? { kind, key: `${issue.id}@${issue.updatedOn}`, ...RM_ALERT[kind] } : null;
+}
+
+export function rmAlerts(issues, seen) {
+  const out = {};
+  for (const i of issues || []) { const a = rmAlert(i, seen); if (a) out[i.id] = a; }
+  return out;
+}
+
+// Mark these issues seen at their current updatedOn; keeps the newest RM_SEEN_MAX entries.
+export function rmMarkSeen(seen, issues) {
+  const next = { ...(seen || {}) };
+  for (const i of issues || []) if (i && typeof i.updatedOn === 'string') next[i.id] = i.updatedOn;
+  const ids = Object.keys(next);
+  if (ids.length <= RM_SEEN_MAX) return next;
+  return Object.fromEntries(ids.map((id) => [id, next[id]]).sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, RM_SEEN_MAX));
+}
+
+// Read the stored seen map; anything malformed counts as "never stored".
+export function rmParseSeen(text) {
+  try {
+    const v = JSON.parse(text);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    return Object.fromEntries(Object.entries(v).filter(([id, at]) => /^\d+$/.test(id) && typeof at === 'string'));
+  } catch { return null; }
+}
+
+// Alerts that were not there before. known = Set of alert keys already counted (mutated).
+export function rmFreshAlerts(known, alerts) {
+  const fresh = [];
+  for (const [id, a] of Object.entries(alerts)) if (!known.has(a.key)) { known.add(a.key); fresh.push({ id: Number(id), ...a }); }
+  return fresh;
+}
+
+export function rmNotifyText(alert, subject) {
+  const s = (subject || '').length > 60 ? `${subject.slice(0, 59)}…` : subject || '';
+  return { title: '📋 Redmine', body: `#${alert.id} ${alert.say}${s ? ` — ${s}` : ''}`, tag: `neko-rm-${alert.id}` };
 }

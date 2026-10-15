@@ -45,21 +45,35 @@ export function runDemo(dispatch) {
   let lastError;
   const createdAt = Date.now();
   dispatch({ type: 'snapshot', serverStartedAt: createdAt, sessions: [], feed: [] });
-  const issue = (id, subject, dueDate, priority, priorityId, status, doneRatio) => ({
-    id, subject, dueDate, priority, priorityId, status, doneRatio, project: 'Demo Project', tracker: 'Task', updatedOn: null, url: '#demo',
-    spentHours: doneRatio / 20, estimatedHours: 5,
+  const iso = (msAgo) => new Date(createdAt - msAgo).toISOString().replace(/\.\d+Z$/, 'Z');
+  const issue = (id, subject, dueDate, priority, priorityId, status, doneRatio, updatedAgo, lastActivity = null) => ({
+    id, subject, dueDate, priority, priorityId, status, doneRatio, project: 'Demo Project', tracker: 'Task', updatedOn: iso(updatedAgo), url: '#demo',
+    spentHours: doneRatio / 20, estimatedHours: 5, lastActivity,
   });
+  const H = 3600_000;
+  // demo only: someone else replied on 1001 and moved 1003 to Feedback; 1005 is new; 1002 was my own edit
   const demoIssues = [
-    issue(1001, '(demo) แก้หน้า login ให้รองรับมือถือ', new Date(createdAt + -2 * 86400000).toISOString().slice(0, 10), 'High', 3, 'In Progress', 60),
-    issue(1002, '(demo) ทำรายงานสรุปยอดรายเดือน', new Date(createdAt + 1 * 86400000).toISOString().slice(0, 10), 'Normal', 2, 'New', 0),
-    issue(1003, '(demo) อัปเดตเอกสาร API', null, 'Low', 1, 'Feedback', 30),
-    issue(1004, '(demo) ปรับสีปุ่มหน้าแรก', null, 'Normal', 2, 'Resolved', 100),
+    issue(1001, '(demo) แก้หน้า login ให้รองรับมือถือ', new Date(createdAt + -2 * 86400000).toISOString().slice(0, 10), 'High', 3, 'In Progress', 60,
+      0.4 * H, { at: iso(0.4 * H), byMe: false, kinds: ['comment'] }),
+    issue(1002, '(demo) ทำรายงานสรุปยอดรายเดือน', new Date(createdAt + 1 * 86400000).toISOString().slice(0, 10), 'Normal', 2, 'New', 0,
+      1 * H, { at: iso(1 * H), byMe: true, kinds: ['status'] }),
+    issue(1003, '(demo) อัปเดตเอกสาร API', null, 'Low', 1, 'Feedback', 30, 2 * H, { at: iso(2 * H), byMe: false, kinds: ['status'] }),
+    issue(1004, '(demo) ปรับสีปุ่มหน้าแรก', null, 'Normal', 2, 'Resolved', 100, 30 * H, { at: iso(30 * H), byMe: false, kinds: ['status'] }),
+    issue(1005, '(demo) ตรวจ log การชำระเงินที่ล้มเหลว', null, 'Normal', 2, 'New', 0, 0.2 * H, { at: iso(0.2 * H), byMe: false, kinds: ['other'] }),
   ];
+  const demoSeen = { 1001: iso(5 * H), 1002: iso(5 * H), 1003: iso(5 * H), 1004: iso(30 * H) };
+  const demoGone = [{ id: 998, subject: '(demo) ย้ายไฟล์ config ไป vault', at: createdAt - 3 * H }];
   const demoTime = demoWorkTime(createdAt);
-  dispatch({ type: 'redmine', redmine: { configured: true, baseUrl: null, issues: demoIssues, total: demoIssues.length, time: demoTime, timeError: null, fetchedAt: createdAt, error: null, errorAt: null, loading: false } });
+  dispatch({ type: 'redmine', redmine: { configured: true, baseUrl: null, issues: demoIssues, total: demoIssues.length, gone: demoGone, demoSeen, time: demoTime, timeError: null, fetchedAt: createdAt, error: null, errorAt: null, loading: false } });
   dispatch({ type: 'holidays', holidays: { list: demoHolidays(demoTime.daily), configured: true, error: null } });
   let demoTok = demoTokens(createdAt);
   dispatch({ type: 'tokens', tokens: demoTok });
+  // FAKE time Claude worked per ticket (demo only)
+  const M = 60_000;
+  dispatch({ type: 'claudeTime', claudeTime: { updatedAt: createdAt, days: [
+    { date: demoTime.today, items: [{ ticket: 1001, project: null, ms: 130 * M }, { ticket: 1005, project: null, ms: 80 * M }, { ticket: null, project: 'demo-tools', ms: 25 * M }] },
+    { date: demoTime.log[2].spentOn, items: [{ ticket: 1003, project: null, ms: 190 * M }] },
+  ] } });
 
   const subs = {};
   const step = () => {
@@ -130,7 +144,11 @@ function demoWorkTime(at) {
   const monthStart = ymd(new Date(now.getFullYear(), now.getMonth(), 1));
   const sum = (from) => daily.filter((d) => d.date >= from).reduce((s, d) => s + d.hours, 0);
   const entry = (id, spentOn, issueId, activity, hours, comment) => ({ id, spentOn, createdOn: null, issueId, activity, hours, comment });
+  // FAKE Redmine leave day (demo only): the first logged weekday 12+ days ago, logged as activity "Leave".
+  const leaveDay = daily.slice(0, -12).reverse().find((d) => d.hours > 0 && ![0, 6].includes(new Date(`${d.date}T00:00`).getDay()));
+  const leaveDays = leaveDay ? [{ date: leaveDay.date, hours: leaveDay.hours }] : [];
   return {
+    leaveDays,
     today, weekStart, monthStart, rangeStart: daily[0].date, daily,
     todayHours: 3.5, weekHours: sum(weekStart), monthHours: sum(monthStart), subjects: {}, todayByIssue: [],
     log: [
@@ -138,8 +156,18 @@ function demoWorkTime(at) {
       entry(2, today, 1002, 'Design', 1, '(demo) ร่างรายงาน'),
       entry(3, yesterday, 1003, 'Documentation', 8.75, '(demo) เขียนเอกสาร'),
       ...daily.slice(0, -2).filter((d) => d.hours > 0).reverse()
-        .map((d, n) => entry(10 + n, d.date, 1001 + (n % 4), 'Development', d.hours, '(demo) งานจำลอง')),
+        .map((d, n) => d.date === leaveDay?.date
+          ? entry(10 + n, d.date, null, 'Leave', d.hours, '(demo) ลาพักร้อน')
+          : entry(10 + n, d.date, 1001 + (n % 4), 'Development', d.hours, '(demo) งานจำลอง')),
     ],
+    // FAKE commit ↔ logged time match (demo only)
+    commits: {
+      from: weekStart, source: 'file', scanned: 3, missing: [], noTicket: 2, checked: 4,
+      tickets: [
+        { id: 1005, repos: ['demo-api'], commits: 3, days: [today], lastCommit: today, hours: 0, loggedDays: 0, lastLog: null, state: 'none', found: true },
+        { id: 99999, repos: ['demo-web'], commits: 1, days: [today], lastCommit: today, hours: 0, loggedDays: 0, lastLog: null, state: 'none', found: false },
+      ],
+    },
   };
 }
 
