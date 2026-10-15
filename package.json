@@ -1,0 +1,26 @@
+{
+  "name": "neko-dream-office",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cat Fantasy Office — real-time Claude Code monitor driven by Claude Code hooks",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.js",
+    "build": "vite build",
+    "dev:web": "vite",
+    "dev:server": "node --watch server/index.js",
+    "hooks:install": "node scripts/install-hooks.js install",
+    "hooks:uninstall": "node scripts/install-hooks.js uninstall",
+    "hooks:status": "node scripts/install-hooks.js status",
+    "test": "node --test server/ web/src/"
+  },
+  "dependencies": {
+    "ws": "8.18.0"
+  },
+  "devDependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "vite": "5.4.10"
+  }
+}
