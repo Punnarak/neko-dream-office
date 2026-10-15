@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useOffice, useNow, refreshRedmine } from './useOffice.js';
-import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText, claudeDay, claudeMs, logTimeUrl, suggestHours, usualActivity, isResolved, todayBrief, endOfDay, parseClock, DAY_HOURS } from './office.js';
+import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText, claudeDay, claudeMs, logTimeUrl, suggestHours, usualActivity, isResolved, todayBrief, mergeRequestText, endOfDay, parseClock, DAY_HOURS } from './office.js';
 import { unlockAudio, playSound } from './sound.js';
 import { Cat, Kitten } from './components/Cat.jsx';
 import { OfficeBackdrop, STATIONS } from './components/OfficeScene.jsx';
@@ -364,7 +364,7 @@ function TodayCard({ redmine, claudeTime, holidays, alerts, now, eodAt, onOpen }
   const late = b.due.filter((x) => x.days < 0).length;
   const prevTodo = b.prev && (b.prev.short > 0 || b.prev.unlogged.length > 0);
   const olderMissing = b.missing.filter((x) => x !== b.prev?.date).length;
-  const todo = (late ? 1 : 0) + (b.due.length - late ? 1 : 0) + (b.updates.length ? 1 : 0) + (prevTodo ? 1 : 0) + (evening ? 1 : 0);
+  const todo = (late ? 1 : 0) + (b.due.length - late ? 1 : 0) + (b.updates.length ? 1 : 0) + (b.unmerged.length ? 1 : 0) + (prevTodo ? 1 : 0) + (evening ? 1 : 0);
   const tickets = (rows) => rows.slice(0, 3).map((r) => (r.ticket ? `#${r.ticket}` : r.project || '?')).join(', ') + (rows.length > 3 ? ' …' : '');
   return (
     <details className={`card today ${evening ? 'is-evening' : ''}`} open={open}
@@ -387,6 +387,11 @@ function TodayCard({ redmine, claudeTime, holidays, alerts, now, eodAt, onOpen }
             💬 มีอัปเดต {b.updates.length} งาน: {b.updates.slice(0, 4).map((u) => `${u.icon}#${u.id}`).join(' ')}{b.updates.length > 4 ? ' …' : ''}
           </button></li>
         )}
+        {b.unmerged.length > 0 && (
+          <li><button className="link-btn" onClick={() => onOpen('tasks')} title={b.unmerged.map((u) => `#${u.id} ${u.subject} — ${u.repos.join(', ')}`).join('\n')}>
+            🔀 Resolved แต่ยังไม่ merge {b.unmerged.length} งาน: {b.unmerged.slice(0, 4).map((u) => `#${u.id}`).join(' ')}{b.unmerged.length > 4 ? ' …' : ''}
+          </button></li>
+        )}
         {prevTodo && (
           <li><button className="link-btn" onClick={() => onOpen('time')}>
             ⏱ {dayLabel(b.prev.date, b.today)} ลงไว้ {fmtShort(b.prev.hours)}{b.prev.short > 0 && <> — ขาด <b>{fmtShort(b.prev.short)}</b></>}
@@ -402,7 +407,7 @@ function TodayCard({ redmine, claudeTime, holidays, alerts, now, eodAt, onOpen }
             {b.now.unlogged.length > 0 && <> · Claude ทำ {tickets(b.now.unlogged)} ยังไม่ลง</>}
           </button></li>
         )}
-        {todo === 0 && <li className="muted">✓ ไม่มีงานถึงกำหนด ไม่มีอัปเดตค้าง และลงเวลาเมื่อวานครบแล้ว</li>}
+        {todo === 0 && <li className="muted">✓ ไม่มีงานถึงกำหนด ไม่มีอัปเดตค้าง ไม่มี branch ค้าง merge และลงเวลาเมื่อวานครบแล้ว</li>}
       </ul>
     </details>
   );
@@ -806,7 +811,8 @@ function RedmineCard({ view, redmine, holidays, claudeTime, live, demo, now, ale
   const subjects = Object.fromEntries(redmine.issues.map((i) => [i.id, i.subject]));
   const fresh = redmine.issues.filter((i) => alerts[i.id]);
   const gone = Array.isArray(redmine.gone) ? redmine.gone : [];
-  const row = (i, done) => <IssueRow key={i.id} issue={i} now={now} done={done} alert={alerts[i.id]} onSeen={() => onSeen([i])} />;
+  const row = (i, done) => <IssueRow key={i.id} issue={i} now={now} done={done} alert={alerts[i.id]} onSeen={() => onSeen([i])}
+    unmerged={done ? redmine.unmerged?.[i.id] : null} baseUrl={redmine.baseUrl} merge={redmine.merge} />;
 
   return (
     <section className="card redmine" id="redmine-card" tabIndex={-1} aria-label="งาน Redmine ของฉัน">
@@ -896,7 +902,7 @@ function RedmineCard({ view, redmine, holidays, claudeTime, live, demo, now, ale
 
 // Copies a ready-made prompt for the user to paste into Claude Code themselves.
 // The page never runs anything: it only puts text on the clipboard.
-function CopyPrompt({ text }) {
+function CopyPrompt({ text, label: idle = '📋 คัดลอกคำสั่ง', title }) {
   const [state, setState] = useState('idle');
   useEffect(() => {
     if (state === 'idle') return undefined;
@@ -911,16 +917,16 @@ function CopyPrompt({ text }) {
       setState('fail');
     }
   };
-  const label = state === 'done' ? '✓ คัดลอกแล้ว' : state === 'fail' ? 'คัดลอกไม่ได้' : '📋 คัดลอกคำสั่ง';
+  const label = state === 'done' ? '✓ คัดลอกแล้ว' : state === 'fail' ? 'คัดลอกไม่ได้' : idle;
   return (
     <button type="button" className={`rm-copy ${state}`} onClick={copy}
-      title={`คัดลอก "${text}" ไปวางใน Claude Code`} aria-label={`คัดลอกคำสั่ง ${text}`}>
+      title={title || `คัดลอก "${text}" ไปวางใน Claude Code`} aria-label={title || `คัดลอกคำสั่ง ${text}`}>
       {label}
     </button>
   );
 }
 
-function IssueRow({ issue: i, now, done, alert, onSeen }) {
+function IssueRow({ issue: i, now, done, alert, onSeen, unmerged, baseUrl, merge }) {
   const due = done ? null : dueBadge(i.dueDate, now);
   const seen = alert ? () => onSeen() : undefined;
   const hours = i.spentHours || i.estimatedHours
@@ -938,8 +944,18 @@ function IssueRow({ issue: i, now, done, alert, onSeen }) {
         )}
         <span className="rm-status">{i.status}</span>
         {due && <span className={`due tone-${due.tone}`}>{due.text}</span>}
+        {unmerged?.length > 0 && (
+          <span className="due tone-warn" title={`ยังไม่ merge:\n${unmerged.map((b) => `${b.repo} · ${b.branch} · ahead ${b.ahead} commits${b.base ? ` (→ ${b.base})` : ''}`).join('\n')}`}>
+            🔀 ยังไม่ merge
+          </span>
+        )}
         <CopyPrompt text={`ตรวจสอบ Redmine #${i.id}`} />
       </div>
+      {unmerged?.length > 0 && (
+        <div className="rm-merge">
+          <CopyPrompt text={mergeRequestText(i, unmerged, baseUrl, merge)} label="📋 คัดลอกขอ merge" title={`คัดลอกข้อความขอ merge #${i.id} (${unmerged.length} branch) ไปส่งต่อเอง`} />
+        </div>
+      )}
       <a href={i.url} target="_blank" rel="noopener noreferrer" className="rm-subject" title={i.subject} onClick={seen} onAuxClick={seen}>{i.subject}</a>
       <div className="rm-meta">
         {!done && i.doneRatio !== null && (

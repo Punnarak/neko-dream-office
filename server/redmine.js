@@ -6,15 +6,30 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { clean } from './sanitize.js';
-import { loadGitConfig, scanCommits, matchCommits } from './commits.js';
+import { loadGitConfig, scanCommits, matchCommits, scanUnmerged } from './commits.js';
 
 const CONFIG_FILE = path.join(os.homedir(), '.config', 'neko-dream-office', 'redmine.json');
+const MERGE_FILE = path.join(os.homedir(), '.config', 'neko-dream-office', 'merge.json');
+
+// Optional { greeting, ticketServer } for the "copy merge request" text. Kept outside the repo
+// because it names people and internal servers.
+export function loadMergeConfig(file = MERGE_FILE) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const greeting = typeof cfg.greeting === 'string' ? clean(cfg.greeting.trim(), 120) : '';
+    const server = typeof cfg.ticketServer === 'string' ? cfg.ticketServer.trim().replace(/\/+$/, '') : '';
+    return { greeting: greeting || null, ticketServer: /^https?:\/\/[^\s]{1,200}$/.test(server) ? server : null };
+  } catch { return { greeting: null, ticketServer: null }; }
+}
 const TIMEOUT_MS = 10_000;
 const MANUAL_GAP_MS = 30_000;
 const MAX_ISSUES = 50;
 const ACTIVITY_PER_REFRESH = 10; // issue detail requests (journals) per refresh, at most
 const ACTIVITY_CONCURRENCY = 3;
 const GONE_KEEP_MS = 24 * 60 * 60 * 1000;
+const MAX_UNMERGED_BRANCHES = 5; // per ticket
+// Same rule as the page (web/src/office.js isResolved).
+export const isResolved = (i) => /resolved|รอปิด/i.test(i?.status || '');
 
 // REDMINE_URL / REDMINE_API_KEY are the only environment variables this server reads.
 export function loadConfig(env = process.env, file = CONFIG_FILE) {
@@ -163,13 +178,14 @@ function describeError(e) {
 }
 
 export class RedmineFeed {
-  constructor({ config = loadConfig(), git, intervalMs, onUpdate = () => {}, extraIssueIds = () => [] } = {}) {
+  constructor({ config = loadConfig(), git, intervalMs, onUpdate = () => {}, extraIssueIds = () => [], unmergedScan = scanUnmerged } = {}) {
     this.config = config;
     this.git = git !== undefined ? git : config ? loadGitConfig() : null; // { author, repos } or null
     this.baseUrl = config ? config.url.replace(/\/+$/, '') : null;
     this.intervalMs = Math.max(60_000, intervalMs || 300_000);
     this.onUpdate = onUpdate;
     this.extraIssueIds = extraIssueIds; // tickets Claude worked on: their subjects are looked up too
+    this.unmergedScan = unmergedScan;
     this.timer = null;
     this.lastAttemptAt = 0;
     this.inFlight = null;
@@ -177,7 +193,7 @@ export class RedmineFeed {
     this.activity = new Map();   // issue id -> { updatedOn, lastActivity }
     this.wanted = new Set();     // issue ids whose newest journal still has to be read
     this.prev = null;            // last good list: id -> { updatedOn, subject }, plus whether it was complete
-    this.data = { configured: !!config, baseUrl: this.baseUrl, issues: [], total: 0, gone: [], time: null, timeError: null, fetchedAt: null, error: null, errorAt: null, loading: false };
+    this.data = { configured: !!config, baseUrl: this.baseUrl, issues: [], total: 0, gone: [], unmerged: {}, merge: loadMergeConfig(), time: null, timeError: null, fetchedAt: null, error: null, errorAt: null, loading: false };
   }
 
   snapshot() { return this.data; }
@@ -212,8 +228,9 @@ export class RedmineFeed {
         const gone = this.trackGone(issues, Date.now());
         // "what happened last" is optional: a failure here never hides the list
         try { await this.fetchActivity(issues.list); } catch { /* keep what is cached */ }
+        const unmerged = await this.fetchUnmerged(issues.list);
         this.set({
-          issues: issues.list.map((i) => ({ ...i, lastActivity: this.activityFor(i) })), total: issues.total, gone,
+          issues: issues.list.map((i) => ({ ...i, lastActivity: this.activityFor(i) })), total: issues.total, gone, unmerged,
           fetchedAt: Date.now(), error: null, errorAt: null, time: t.time ?? this.data.time, timeError: t.timeError ?? null,
         });
       })
@@ -269,6 +286,27 @@ export class RedmineFeed {
       } catch { /* subjects are optional */ }
     }
     return time;
+  }
+
+  // Resolved issues whose work still sits on a branch the default branch does not have (local git only).
+  // Optional like time.commits: any failure keeps the last result. Sends repo folder, branch name and counts only.
+  async fetchUnmerged(list) {
+    if (!this.git) return {};
+    const ids = list.filter(isResolved).map((i) => i.id);
+    if (!ids.length) return {};
+    try {
+      const found = await this.unmergedScan(this.git, ids);
+      const out = {};
+      for (const [id, branches] of found) {
+        out[id] = branches.slice(0, MAX_UNMERGED_BRANCHES).map((b) => ({
+          repo: clean(String(b.repo), 80), branch: clean(String(b.branch), 60), base: clean(String(b.base || ''), 60) || null,
+          ahead: Number.isInteger(b.ahead) ? b.ahead : 0,
+        }));
+      }
+      return out;
+    } catch {
+      return this.data.unmerged || {};
+    }
   }
 
   async fetchIssues() {

@@ -423,15 +423,40 @@ export function todayBrief({ redmine, claudeTime, off = {}, alerts = {}, now }) 
   const subjects = Object.fromEntries((redmine?.issues || []).map((i) => [i.id, i.subject]));
   const updates = Object.entries(alerts).map(([id, a]) => ({ id: Number(id), subject: subjects[id], icon: a.icon, text: a.text }));
   const prev = time?.daily ? prevWorkday(today, off) : null;
+  // Resolved, yet some branch with its work is not merged into the default branch (backend: local git only).
+  const unmerged = (redmine?.issues || [])
+    .filter((i) => isResolved(i) && redmine.unmerged?.[i.id]?.length)
+    .map((i) => ({ id: i.id, subject: i.subject, url: i.url, repos: [...new Set(redmine.unmerged[i.id].map((b) => b.repo))] }));
   return {
     today,
     workday: isWorkday(today, off),
     due,
     updates,
+    unmerged,
     prev: prev && time.daily.some((x) => x.date === prev) ? dayStatus(time, claudeTime, prev) : null,
     now: time ? dayStatus(time, claudeTime, today) : null,
     missing: time?.daily ? workStats(time.daily, today, off).missing : [],
   };
+}
+
+// ---- "ขอ merge": a ready-to-send message the user copies and pastes to whoever merges ----
+
+// Greeting and ticket-server URL come from ~/.config/neko-dream-office/merge.json (never in the repo).
+export const MERGE_GREETING = 'รบกวน Merge code ให้หน่อยครับ';
+
+// Greeting, subject, issue url, then one line per branch: a ticket-server link for "ticket/<n>" branches,
+// "<repo>: <branch>" for anything else. `branches` = redmine.unmerged[id].
+export function mergeRequestText(issue, branches, baseUrl, merge = {}) {
+  const url = issue?.url || (baseUrl ? `${baseUrl.replace(/\/+$/, '')}/issues/${issue?.id}` : `#${issue?.id}`);
+  const lines = [merge.greeting || MERGE_GREETING, issue?.subject || `#${issue?.id}`, url];
+  const seen = new Set();
+  for (const b of branches || []) {
+    const name = String(b.branch || '').replace(/^origin\//, '');
+    const m = /^ticket\/(\d+)$/.exec(name);
+    const line = m && merge.ticketServer ? `${merge.ticketServer}/${b.repo}.git/${m[1]}` : `${b.repo}: ${name}`;
+    if (!seen.has(line)) { seen.add(line); lines.push(line); }
+  }
+  return lines.join('\n');
 }
 
 // "16:30" -> minutes after midnight, or null for "off" / garbage.

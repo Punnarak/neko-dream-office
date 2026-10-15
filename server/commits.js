@@ -138,3 +138,98 @@ export function matchCommits(scan, entries) {
   tickets.sort((a, b) => rank[a.state] - rank[b.state] || b.lastCommit.localeCompare(a.lastCommit) || b.id - a.id);
   return { tickets: tickets.slice(0, MAX_TICKETS), total: tickets.length, noTicket: scan.noTicket, scanned: scan.scanned, missing: scan.missing };
 }
+
+// ---- Resolved but not merged: branches with work on my tickets that the default branch does not have ----
+
+const MAX_BRANCHES = 300; // per repo; each one costs a quick local `git log`
+const BRANCH_TICKET = /(?<!\d)\d{5,6}(?!\d)/g; // Redmine ids here are 5–6 digits ("ticket/212" is not one)
+// Per (repo, base tip, branch tip): every ticket the branch's own commits mention, and how many there are.
+// A branch is logged again only when it or the default branch moves. Ticket ids and counts only.
+const branchCache = new Map();
+const MAX_CACHE = 5000;
+
+// Local read-only git: execFile, no shell, no network. Resolves stdout, or null on any failure.
+export function runGit(repo, args) {
+  return new Promise((resolve) => {
+    execFile('git', ['-C', repo, ...args], { timeout: GIT_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
+  });
+}
+
+// origin/HEAD when the clone knows it, else the first of origin/master, origin/main, master, main that exists.
+async function defaultBranch(repo, git) {
+  const head = (await git(repo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']))?.trim();
+  if (head) return head;
+  for (const ref of ['origin/master', 'origin/main', 'master', 'main']) {
+    if ((await git(repo, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) !== null) return ref;
+  }
+  return null;
+}
+
+// Branches not merged into `base`, one per name: "origin/x" and local "x" count once (the one further ahead wins).
+async function unmergedIn(repo, git, wanted) {
+  const base = await defaultBranch(repo, git);
+  if (!base) return [];
+  // Full ref names so remote HEAD pointers are easy to skip.
+  const baseSha = (await git(repo, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]))?.trim();
+  const out = await git(repo, ['branch', '-a', '--no-merged', base, '--format=%(objectname) %(refname)']);
+  if (out === null) return [];
+  const short = base.replace(/^origin\//, '');
+  const refs = new Map(); // display name -> [{ ref, sha }] to log
+  for (const line of out.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    const [sha, full = ''] = line.split(' ');
+    if (!full || full.endsWith('/HEAD')) continue;
+    const ref = full.replace(/^refs\/(heads|remotes)\//, '');
+    const name = ref.replace(/^origin\//, '');
+    if (name === short) continue; // local copy of the default branch
+    if (!refs.has(name)) refs.set(name, []);
+    refs.get(name).push({ ref, sha });
+  }
+  const found = [];
+  for (const [name, list] of [...refs].slice(0, MAX_BRANCHES)) {
+    let best = null;
+    for (const { ref, sha } of list) {
+      const key = `${repo}|${baseSha}|${ref}|${sha}`;
+      let hit = baseSha ? branchCache.get(key) : null;
+      if (!hit) {
+        const log = await git(repo, ['log', `${base}..${ref}`, '--no-merges', '--pretty=%s']);
+        if (log === null) continue;
+        const subjects = log.split('\n').filter(Boolean);
+        const ids = new Set([...name.matchAll(BRANCH_TICKET)].map((m) => Number(m[0])));
+        for (const s of subjects) for (const id of extractTickets(s)) ids.add(id);
+        hit = { ids: [...ids], ahead: subjects.length };
+        if (baseSha) {
+          if (branchCache.size >= MAX_CACHE) branchCache.clear();
+          branchCache.set(key, hit);
+        }
+      }
+      const tickets = hit.ids.filter((id) => wanted.has(id));
+      if (tickets.length && (!best || hit.ahead > best.ahead)) best = { tickets, ahead: hit.ahead };
+    }
+    if (best) found.push({ name, base: short, ...best });
+  }
+  return found;
+}
+
+// Map ticketId -> [{ repo, branch, base, ahead }] for the given tickets only. Never `git fetch`: what the
+// local clone knows of origin is what counts. Only folder names, branch names and counts leave this module.
+export async function scanUnmerged(config, ticketIds, git = runGit) {
+  const wanted = new Set((ticketIds || []).filter((id) => Number.isInteger(id) && id > 0));
+  const result = new Map();
+  if (!wanted.size || !config?.repos?.length) return result;
+  const queue = config.repos.slice();
+  const worker = async () => {
+    for (let repo = queue.shift(); repo; repo = queue.shift()) {
+      let branches = [];
+      try { branches = await unmergedIn(repo, git, wanted); } catch { /* one broken repo never hides the others */ }
+      for (const b of branches) {
+        for (const id of b.tickets) {
+          if (!result.has(id)) result.set(id, []);
+          result.get(id).push({ repo: path.basename(repo), branch: b.name.slice(0, 60), base: b.base.slice(0, 60), ahead: b.ahead });
+        }
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(GIT_CONCURRENCY, queue.length) }, worker));
+  for (const list of result.values()) list.sort((a, b) => b.ahead - a.ahead || a.repo.localeCompare(b.repo) || a.branch.localeCompare(b.branch));
+  return result;
+}

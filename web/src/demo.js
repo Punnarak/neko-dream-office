@@ -63,8 +63,10 @@ export function runDemo(dispatch) {
   ];
   const demoSeen = { 1001: iso(5 * H), 1002: iso(5 * H), 1003: iso(5 * H), 1004: iso(30 * H) };
   const demoGone = [{ id: 998, subject: '(demo) ย้ายไฟล์ config ไป vault', at: createdAt - 3 * H }];
+  // Resolved, but its work still sits on branches the default branch does not have
+  const demoUnmerged = { 1004: [{ repo: 'demo-web', branch: 'ticket/42', base: 'master', ahead: 3 }, { repo: 'demo-api', branch: 'task-1004-colors', base: 'main', ahead: 1 }] };
   const demoTime = demoWorkTime(createdAt);
-  dispatch({ type: 'redmine', redmine: { configured: true, baseUrl: null, issues: demoIssues, total: demoIssues.length, gone: demoGone, demoSeen, time: demoTime, timeError: null, fetchedAt: createdAt, error: null, errorAt: null, loading: false } });
+  dispatch({ type: 'redmine', redmine: { configured: true, baseUrl: null, issues: demoIssues, total: demoIssues.length, gone: demoGone, unmerged: demoUnmerged, demoSeen, time: demoTime, timeError: null, fetchedAt: createdAt, error: null, errorAt: null, loading: false } });
   dispatch({ type: 'holidays', holidays: { list: demoHolidays(demoTime.daily), configured: true, error: null } });
   let demoTok = demoTokens(createdAt);
   dispatch({ type: 'tokens', tokens: demoTok });

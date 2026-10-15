@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { extractTickets, groupCommits, matchCommits, loadGitConfig, scanCommits } from './commits.js';
+import { extractTickets, groupCommits, matchCommits, loadGitConfig, scanCommits, scanUnmerged } from './commits.js';
 
 test('extractTickets reads the commit styles used in our repos', () => {
   assert.deepEqual(extractTickets('Task #104498: ET001 NEWCASE #ai-work'), [104498]);
@@ -102,5 +102,92 @@ test('scanCommits reads a real temporary repo and reports missing ones by folder
   assert.deepEqual([...r.tickets.keys()], [5555]);
   assert.equal(r.scanned, 1);
   assert.deepEqual(r.missing, ['nope']);
+  fs.rmSync(dir, { recursive: true });
+});
+
+// A fake git: answers by joining the args, null (= failed) for anything unknown.
+function fakeGit(repos) {
+  const calls = [];
+  const git = async (repo, args) => {
+    calls.push(args.join(' '));
+    const r = repos[repo];
+    if (!r) return null;
+    const key = args.join(' ');
+    return key in r ? r[key] : null;
+  };
+  return { git, calls };
+}
+
+test('scanUnmerged: tickets from branch names (5–6 digits) and from commits only on the branch', async () => {
+  const { git, calls } = fakeGit({
+    '/r/api': {
+      'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/master\n',
+      'branch -a --no-merged origin/master --format=%(objectname) %(refname)':
+        'a1 refs/heads/task-104498\na2 refs/remotes/origin/task-104498\na3 refs/remotes/origin/HEAD\na4 refs/heads/master\na5 refs/remotes/origin/ticket/212\na6 refs/remotes/origin/feature/x\n',
+      'log origin/master..task-104498 --no-merges --pretty=%s': 'wip\n',
+      'log origin/master..origin/task-104498 --no-merges --pretty=%s': 'Task #104498: a\nTask #104498: b\n',
+      'log origin/master..master --no-merges --pretty=%s': 'Task #104498: local master\n',
+      'log origin/master..origin/ticket/212 --no-merges --pretty=%s': 'fix typo\n',
+      'log origin/master..origin/feature/x --no-merges --pretty=%s': 'Defect #200001 : y password=hunter2\nTask #999999: not resolved\n',
+    },
+    // no origin/HEAD: falls back to the first ref that exists
+    '/r/web': {
+      'rev-parse --verify --quiet main^{commit}': 'abc\n',
+      'branch -a --no-merged main --format=%(objectname) %(refname)': 'b1 refs/heads/200001-fix\n',
+      'log main..200001-fix --no-merges --pretty=%s': 'x\n',
+    },
+  });
+  const r = await scanUnmerged({ repos: ['/r/api', '/r/web', '/r/gone'] }, [104498, 200001, 212], git);
+  assert.deepEqual(r.get(104498), [{ repo: 'api', branch: 'task-104498', base: 'master', ahead: 2 }]);
+  assert.deepEqual(r.get(200001), [
+    { repo: 'api', branch: 'feature/x', base: 'master', ahead: 2 },
+    { repo: 'web', branch: '200001-fix', base: 'main', ahead: 1 },
+  ]);
+  assert.equal(r.has(212), false);    // "ticket/212" is not a Redmine id
+  assert.equal(r.has(999999), false); // not asked for
+  assert.ok(!JSON.stringify([...r]).includes('hunter2'));
+  assert.ok(!calls.some((c) => /fetch|pull|push/.test(c)));
+});
+
+test('scanUnmerged logs a branch again only when it or the default branch moves', async () => {
+  const repo = {
+    'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/master\n',
+    'rev-parse --verify --quiet origin/master^{commit}': 'base1\n',
+    'branch -a --no-merged origin/master --format=%(objectname) %(refname)': 'c1 refs/remotes/origin/ticket/9\n',
+    'log origin/master..origin/ticket/9 --no-merges --pretty=%s': 'Task #300001: x\n',
+  };
+  const { git, calls } = fakeGit({ '/r/cache': repo });
+  const logs = () => calls.filter((c) => c.startsWith('log ')).length;
+  assert.equal((await scanUnmerged({ repos: ['/r/cache'] }, [300001], git)).get(300001)[0].ahead, 1);
+  await scanUnmerged({ repos: ['/r/cache'] }, [300001], git);
+  assert.equal(logs(), 1);
+  repo['branch -a --no-merged origin/master --format=%(objectname) %(refname)'] = 'c2 refs/remotes/origin/ticket/9\n';
+  repo['log origin/master..origin/ticket/9 --no-merges --pretty=%s'] = 'Task #300001: x\nTask #300001: y\n';
+  assert.equal((await scanUnmerged({ repos: ['/r/cache'] }, [300001], git)).get(300001)[0].ahead, 2);
+  assert.equal(logs(), 2);
+});
+
+test('scanUnmerged: nothing to look for runs no git at all', async () => {
+  const { git, calls } = fakeGit({});
+  assert.equal((await scanUnmerged({ repos: ['/r/a'] }, [], git)).size, 0);
+  assert.equal(calls.length, 0);
+});
+
+test('scanUnmerged reads a real temporary repo (no remote)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-unmerged-'));
+  const git = (...a) => execFileSync('git', ['-C', dir, ...a]);
+  const commit = (m) => git('-c', 'user.name=Neko Test', '-c', 'user.email=neko@test', 'commit', '-q', '--allow-empty', '-m', m);
+  git('init', '-q', '-b', 'main');
+  commit('init');
+  git('checkout', '-q', '-b', 'task-123456');
+  commit('Task #123456: one');
+  commit('Task #123456: two');
+  git('checkout', '-q', '-b', 'done', 'main');
+  commit('Task #654321: merged');
+  git('checkout', '-q', 'main');
+  git('-c', 'user.name=Neko Test', '-c', 'user.email=neko@test', 'merge', '-q', '--no-edit', 'done');
+  const r = await scanUnmerged({ repos: [dir] }, [123456, 654321]);
+  assert.deepEqual(r.get(123456), [{ repo: path.basename(dir), branch: 'task-123456', base: 'main', ahead: 2 }]);
+  assert.equal(r.has(654321), false);
   fs.rmSync(dir, { recursive: true });
 });

@@ -252,3 +252,26 @@ test('summarizeTime marks days with "Leave" activity as leaveDays (hours still i
   assert.ok(!JSON.stringify(t.leaveDays).includes('secret'));
   assert.deepEqual(summarizeTime([], now).leaveDays, []);
 });
+
+test('fake Redmine: unmerged branches only for Resolved issues, capped at 5, failures keep the list', async () => {
+  const rm = { list: [{ ...fakeIssue(1, '2026-10-14T00:00:00Z'), status: { id: 3, name: 'Resolved' } }, fakeIssue(2, '2026-10-13T00:00:00Z')] };
+  const f = fakeFeed(rm);
+  f.git = { author: 'me', repos: ['/r/a'] };
+  let asked = null;
+  f.unmergedScan = async (cfg, ids) => {
+    asked = ids;
+    return new Map([[1, Array.from({ length: 7 }, (_, n) => ({ repo: 'a', branch: `b${n}`, base: 'master', ahead: 7 - n, subject: 'secret' }))]]);
+  };
+  await f.refresh();
+  assert.deepEqual(asked, [1]);
+  assert.equal(f.data.unmerged[1].length, 5);
+  assert.deepEqual(f.data.unmerged[1][0], { repo: 'a', branch: 'b0', base: 'master', ahead: 7 });
+  assert.ok(!JSON.stringify(f.data.unmerged).includes('secret'));
+  f.unmergedScan = async () => { throw new Error('git broke'); };
+  await f.refresh();
+  assert.equal(f.data.error, null);
+  assert.equal(f.data.unmerged[1].length, 5); // last good result kept
+  f.git = null;
+  await f.refresh();
+  assert.deepEqual(f.data.unmerged, {});
+});

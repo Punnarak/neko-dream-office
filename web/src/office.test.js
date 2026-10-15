@@ -281,7 +281,7 @@ test('claudeDay: what is still unlogged per ticket', () => {
   assert.equal(claudeMs(null, '2026-10-15', 2), 0);
 });
 
-import { todayBrief, endOfDay, prevWorkday, parseClock, isResolved } from './office.js';
+import { todayBrief, endOfDay, prevWorkday, parseClock, isResolved, mergeRequestText, MERGE_GREETING } from './office.js';
 const at = (h, m = 0) => new Date(2026, 9, 15, h, m).getTime(); // Thu 15 Oct 2026
 const M60 = 3_600_000;
 const rm = {
@@ -323,7 +323,7 @@ test('todayBrief: due, updates, yesterday and today', () => {
   assert.equal(b.workday, true);
   assert.ok(isResolved({ status: 'Resolved' }));
   const empty = todayBrief({ redmine: null, claudeTime: null, now: at(9) });
-  assert.deepEqual([empty.due, empty.updates, empty.prev, empty.now, empty.missing], [[], [], null, null, []]);
+  assert.deepEqual([empty.due, empty.updates, empty.prev, empty.now, empty.missing, empty.unmerged], [[], [], null, null, [], []]);
 });
 test('endOfDay: once, after the time, on a working day, only when something is open', () => {
   const base = { redmine: rm, claudeTime: ct, at: '17:00' };
@@ -337,4 +337,32 @@ test('endOfDay: once, after the time, on a working day, only when something is o
   const full = { ...rm, time: { ...rm.time, daily: [{ date: '2026-10-15', hours: 8 }], log: [{ spentOn: '2026-10-15', issueId: 1, hours: 2 }, { spentOn: '2026-10-15', issueId: 2, hours: 1.25 }] } };
   assert.equal(endOfDay({ ...base, redmine: full, now: at(18) }), null);
   assert.equal(endOfDay({ ...base, redmine: { ...rm, time: { ...rm.time, today: '2026-10-14' } }, now: at(18) }), null); // stale data
+});
+
+test('todayBrief: Resolved issues with unmerged branches', () => {
+  const unmerged = {
+    4: [{ repo: 'api', branch: 'ticket/212', base: 'master', ahead: 2 }, { repo: 'api', branch: 'task-4', base: 'master', ahead: 1 }, { repo: 'web', branch: 'x', base: 'main', ahead: 1 }],
+    1: [{ repo: 'api', branch: 'y', base: 'master', ahead: 1 }], // not Resolved: ignored
+  };
+  const b = todayBrief({ redmine: { ...rm, unmerged }, claudeTime: null, now: at(9) });
+  assert.deepEqual(b.unmerged, [{ id: 4, subject: 'done', url: undefined, repos: ['api', 'web'] }]);
+  assert.deepEqual(todayBrief({ redmine: rm, claudeTime: null, now: at(9) }).unmerged, []);
+});
+
+test('mergeRequestText: greeting, subject, url, then one line per branch', () => {
+  const issue = { id: 12345, subject: '(test) fix login', url: 'https://rm.example/issues/12345' };
+  const branches = [
+    { repo: 'app-a', branch: 'ticket/212', ahead: 3 },
+    { repo: 'app-a', branch: 'origin/ticket/212', ahead: 3 }, // same line once
+    { repo: 'app-b', branch: 'task-12345', ahead: 1 },
+  ];
+  const merge = { greeting: 'please merge', ticketServer: 'https://git.example/tickets' };
+  assert.equal(mergeRequestText(issue, branches, 'https://rm.example', merge), [
+    'please merge', '(test) fix login', 'https://rm.example/issues/12345',
+    'https://git.example/tickets/app-a.git/212', 'app-b: task-12345',
+  ].join('\n'));
+  // no merge.json: default greeting, and ticket/<n> branches are written as repo: branch
+  assert.deepEqual(mergeRequestText(issue, branches.slice(0, 1), 'https://rm.example').split('\n'),
+    [MERGE_GREETING, '(test) fix login', 'https://rm.example/issues/12345', 'app-a: ticket/212']);
+  assert.equal(mergeRequestText({ id: 5, subject: 's' }, [], 'https://rm.example/').split('\n')[2], 'https://rm.example/issues/5');
 });
