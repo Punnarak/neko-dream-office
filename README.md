@@ -272,7 +272,8 @@ npm start                # เปิด backend + หน้าเว็บ → h
 
 แสดงนัดของวันนี้จากปฏิทิน `.ics` (Outlook / Exchange, Google Calendar หรือไฟล์ในเครื่อง) ไว้บนสุดของการ์ด
 
-- **ตั้งค่า:** สร้าง `~/.config/neko-dream-office/calendar.json` แล้ว `chmod 600` (ลิงก์ iCal เป็นความลับ ใครมีลิงก์ก็อ่านปฏิทินได้) แล้ว restart backend
+- **เชื่อมต่อจากหน้าเว็บ (ง่ายสุด):** ถ้ายังไม่มีปฏิทิน การ์ดจะมีปุ่ม **📅 เชื่อมต่อปฏิทิน (iCal)** → วางลิงก์ → backend ลองดึงก่อน ถ้าเป็นไฟล์ iCal จริงจึงบันทึกลง `calendar.json` (chmod 600) และแสดงทันที ไม่ต้อง restart (endpoint `POST /api/calendar/connect` รับเฉพาะจากหน้าเว็บของเราเอง)
+- **หรือตั้งค่าเอง:** สร้าง `~/.config/neko-dream-office/calendar.json` แล้ว `chmod 600` (ลิงก์ iCal เป็นความลับ ใครมีลิงก์ก็อ่านปฏิทินได้) แล้ว restart backend
   ```json
   {"calendars": [
     {"name": "งาน", "url": "https://…/calendar.ics"},

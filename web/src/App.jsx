@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useOffice, useNow, refreshRedmine } from './useOffice.js';
+import { useOffice, useNow, refreshRedmine, connectCalendar } from './useOffice.js';
 import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText, claudeDay, claudeMs, logTimeUrl, suggestHours, usualActivity, isResolved, todayBrief, calendarDay, clockOf, meetingsDue, meetingKey, mergeRequestText, endOfDay, parseClock, DAY_HOURS } from './office.js';
 import { unlockAudio, playSound } from './sound.js';
 import { Cat, Kitten } from './components/Cat.jsx';
@@ -399,7 +399,8 @@ function TodayCard({ redmine, calendar, claudeTime, holidays, alerts, now, eodAt
   const [open, setOpen] = useState(() => readPref('neko.todayOpen', 'on') !== 'off');
   const rmReady = !!(redmine?.configured && redmine.fetchedAt);
   const cal = calendar?.fetchedAt ? calendarDay(calendar, now) : null;
-  if (!rmReady && !cal) return null;
+  const needCal = calendar && !calendar.configured; // live, but no calendar.json yet: offer the connect form
+  if (!rmReady && !cal && !needCal) return null;
   const off = offDays(holidays?.list, readLeave(), redmine?.time?.leaveDays);
   const b = todayBrief({ redmine: rmReady ? redmine : null, claudeTime, off, alerts, now });
   const d = new Date(now);
@@ -428,6 +429,7 @@ function TodayCard({ redmine, calendar, claudeTime, holidays, alerts, now, eodAt
         </span>
       </summary>
       <ul className="today-list">
+        {needCal && <li className="today-cal"><CalendarConnect /></li>}
         {cal && (
           <li className="today-cal">
             <ul aria-label="นัดหมายวันนี้ (ปฏิทิน iCal)">
@@ -490,6 +492,48 @@ function TodayCard({ redmine, calendar, claudeTime, holidays, alerts, now, eodAt
     </details>
   );
 }
+// "เชื่อมต่อปฏิทิน": paste an iCal link; the backend checks it and saves calendar.json (chmod 600).
+function CalendarConnect() {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  if (!open) {
+    return <button className="mini-btn" onClick={() => setOpen(true)}>📅 เชื่อมต่อปฏิทิน (iCal)</button>;
+  }
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const r = await connectCalendar(url.trim(), name.trim());
+    setBusy(false);
+    if (r?.ok) { setUrl(''); setOpen(false); } // the card switches to the meetings when the snapshot arrives
+    else setError(r?.error || 'เชื่อมต่อไม่สำเร็จ');
+  };
+  return (
+    <form className="cal-connect" onSubmit={submit}>
+      <label>ลิงก์ปฏิทิน (.ics)
+        <input type="text" inputMode="url" autoComplete="off" spellCheck="false" required value={url} onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://…/calendar.ics หรือ webcal://…" disabled={busy} autoFocus />
+      </label>
+      <label>ชื่อ (ไม่บังคับ)
+        <input type="text" maxLength={30} value={name} onChange={(e) => setName(e.target.value)} placeholder="งาน" disabled={busy} />
+      </label>
+      <div className="seg">
+        <button className="mini-btn" type="submit" disabled={busy || !url.trim()}>{busy ? 'กำลังตรวจลิงก์…' : 'เชื่อมต่อ'}</button>
+        <button className="mini-btn" type="button" onClick={() => { setOpen(false); setError(null); }} disabled={busy}>ยกเลิก</button>
+      </div>
+      {error && <p className="tone-error cal-connect-err" role="alert">⚠ {error}</p>}
+      <p className="pop-note">
+        Outlook: Settings → Calendar → Shared calendars → Publish a calendar → ลิงก์ ICS ·
+        Google: Settings → ปฏิทิน → Secret address in iCal format ·
+        ลิงก์เก็บไว้ในเครื่องนี้เท่านั้น (~/.config/neko-dream-office/calendar.json, chmod 600) ไม่ถูกส่งให้หน้าเว็บ
+      </p>
+    </form>
+  );
+}
+
 const CAL_MAX = 6; // meetings shown before the finished ones are folded away
 
 function NotifySettings({ notify, sound }) {

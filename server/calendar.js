@@ -377,21 +377,66 @@ export async function loadText(cal, fetchImpl = fetch) {
   return readLimited(res);
 }
 
+// Normalized { name, url } from what the page sent, or null.
+export function calendarFromInput(input) {
+  const url = typeof input?.url === 'string' ? input.url.trim().replace(/^webcal:\/\//i, 'https://') : '';
+  if (!/^https?:\/\/\S{1,2000}$/i.test(url)) return null;
+  const name = typeof input?.name === 'string' ? clean(input.name.trim(), 30) : '';
+  return { name: name || 'ปฏิทิน', url };
+}
+
+// Writes the config (owner-only: the URLs are secrets). Atomic: a temp file renamed over the old one.
+export function saveCalendarConfig(calendars, file = CALENDAR_FILE) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ calendars }, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, file);
+}
+
 export class CalendarFeed {
-  constructor({ config = loadCalendarConfig(), intervalMs, onUpdate = () => {}, fetchImpl = fetch } = {}) {
-    this.config = config;
+  constructor({ config, file = CALENDAR_FILE, intervalMs, onUpdate = () => {}, fetchImpl = fetch } = {}) {
+    this.file = file;
+    this.config = config !== undefined ? config : loadCalendarConfig(file);
+    this.active = false;
     this.intervalMs = Math.max(60_000, intervalMs || 900_000);
     this.onUpdate = onUpdate;
     this.fetchImpl = fetchImpl;
     this.timer = null;
     this.inFlight = null;
     this.day = null;
-    this.data = { configured: !!config, events: [], calendars: (config || []).map((c) => ({ name: c.name, error: null })), fetchedAt: null };
+    this.data = this.emptyData();
+  }
+
+  emptyData() {
+    return { configured: !!this.config, events: [], calendars: (this.config || []).map((c) => ({ name: c.name, error: null })), fetchedAt: null };
+  }
+
+  // The page's "เชื่อมต่อปฏิทิน" form: fetch the feed once, and only when it really is a calendar
+  // save it and start showing it. Returns { ok } or { ok: false, error } (never the URL).
+  async connect(input) {
+    const cal = calendarFromInput(input);
+    if (!cal) return { ok: false, error: 'ลิงก์ต้องขึ้นต้นด้วย https://, http:// หรือ webcal://' };
+    let text;
+    try { text = await loadText(cal, this.fetchImpl); }
+    catch (e) { return { ok: false, error: `ดึงปฏิทินไม่ได้: ${clean(e?.message || '', 60)}` }; }
+    if (!/BEGIN:VCALENDAR/i.test(text)) return { ok: false, error: 'ลิงก์นี้ไม่ใช่ไฟล์ iCal (.ics)' };
+    const list = [...(this.config || []).filter((c) => c.url !== cal.url), cal].slice(-MAX_CALENDARS);
+    try { saveCalendarConfig(list, this.file); }
+    catch { return { ok: false, error: 'บันทึก calendar.json ไม่ได้' }; }
+    this.config = loadCalendarConfig(this.file);
+    this.day = null;
+    this.data = this.emptyData();
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.active) this.setActive(true); // fetches now and keeps the schedule
+    else this.onUpdate(this.data);
+    return { ok: true };
   }
 
   snapshot() { return this.data; }
 
   setActive(active) {
+    this.active = active;
     if (!this.config) return;
     if (active && !this.timer) {
       if (!this.data.fetchedAt || Date.now() - this.data.fetchedAt >= this.intervalMs) this.refresh();

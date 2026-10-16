@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseIcs, parseLine, parseRule, parseDuration, eventsBetween, loadCalendarConfig, CalendarFeed, wallToMs } from './calendar.js';
+import { parseIcs, parseLine, parseRule, parseDuration, eventsBetween, loadCalendarConfig, CalendarFeed, wallToMs, calendarFromInput } from './calendar.js';
 
 const ics = (...events) => ['BEGIN:VCALENDAR', 'VERSION:2.0', ...events.flat(), 'END:VCALENDAR'].join('\r\n');
 const ev = (...lines) => ['BEGIN:VEVENT', ...lines, 'END:VEVENT'];
@@ -127,4 +127,26 @@ test('CalendarFeed sends only trimmed events and never the URL', async () => {
   assert.deepEqual(snap.calendars, [{ name: 'Work', error: null }, { name: 'Broken', error: 'HTTP 401' }]);
   const json = JSON.stringify(snap);
   for (const leak of ['private-abc123', 'down.example', 'secret notes', 'x@y.z', 'uid']) assert.ok(!json.includes(leak), leak);
+});
+
+test('connect checks the link, then saves calendar.json owner-only and starts showing it', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-cal-'));
+  const file = path.join(dir, 'sub', 'calendar.json');
+  const good = 'https://cal.example.test/secret-xyz/basic.ics';
+  const updates = [];
+  const feed = new CalendarFeed({
+    file, onUpdate: (d) => updates.push(d),
+    fetchImpl: async (url) => (url === good ? new Response(ics(ev('UID:1', 'DTSTART:20261016T020000Z', 'SUMMARY:x'))) : url.includes('html') ? new Response('<html>') : new Response('', { status: 404 })),
+  });
+  assert.equal(feed.snapshot().configured, false);
+  assert.deepEqual(calendarFromInput({ url: 'ftp://x' }), null);
+  assert.equal((await feed.connect({ url: 'javascript:alert(1)' })).ok, false);
+  assert.deepEqual(await feed.connect({ url: 'https://cal.example.test/missing.ics' }), { ok: false, error: 'ดึงปฏิทินไม่ได้: HTTP 404' });
+  assert.equal((await feed.connect({ url: 'https://cal.example.test/page.html' })).error, 'ลิงก์นี้ไม่ใช่ไฟล์ iCal (.ics)');
+  assert.ok(!fs.existsSync(file), 'nothing saved for a bad link');
+  assert.deepEqual(await feed.connect({ url: good.replace('https://', 'webcal://'), name: ' งาน ' }), { ok: true });
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { calendars: [{ name: 'งาน', url: good }] });
+  assert.equal(feed.snapshot().configured, true);
+  assert.ok(updates.length > 0 && !JSON.stringify(updates).includes('secret-xyz'));
 });

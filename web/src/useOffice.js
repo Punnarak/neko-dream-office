@@ -84,3 +84,12 @@ export function refreshRedmine() {
   const base = import.meta.env.DEV ? 'http://127.0.0.1:4777' : '';
   return fetch(`${base}/api/redmine/refresh`, { method: 'POST' }).then((r) => r.json()).then((b) => b.ok === true);
 }
+
+// Connect an iCal feed. The backend fetches it once and saves it only if it is a calendar.
+// Resolves to { ok } or { ok: false, error }; the events arrive over the WebSocket.
+export function connectCalendar(url, name) {
+  const base = import.meta.env.DEV ? 'http://127.0.0.1:4777' : '';
+  return fetch(`${base}/api/calendar/connect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, name }) })
+    .then((r) => r.json())
+    .catch(() => ({ ok: false, error: 'ติดต่อ backend ไม่ได้' }));
+}

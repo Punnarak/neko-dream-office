@@ -177,6 +177,27 @@ function handleRedmineRefresh(req, res) {
   return send(res, 200, { ok: redmine.requestRefresh() });
 }
 
+// The page's "เชื่อมต่อปฏิทิน" form. Only our own pages may call it; the URL is checked by fetching it
+// once, then saved to ~/.config/neko-dream-office/calendar.json (chmod 600). Never logged.
+async function handleCalendarConnect(req, res) {
+  const origin = req.headers.origin || '';
+  if (!ALLOWED_ORIGINS.has(origin)) return send(res, 403, { error: 'forbidden' });
+  res.setHeader('Access-Control-Allow-Origin', origin); // vite dev server on :5173
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Methods', 'POST');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    return send(res, 204, '');
+  }
+  if (req.method !== 'POST') return send(res, 405, { error: 'POST only' });
+  if (!String(req.headers['content-type'] || '').startsWith('application/json')) return send(res, 415, { error: 'json only' });
+  let body;
+  try { body = await readJson(req); }
+  catch (e) { return send(res, e.code || 400, { error: e.message }); }
+  const result = await calendar.connect(body);
+  if (result.ok) console.log(`[neko] Calendar: connected (${calendar.config?.length || 0} iCal feed(s))`);
+  return send(res, 200, result);
+}
+
 function serveStatic(req, res) {
   if (!fs.existsSync(DIST)) {
     return send(res, 200,
@@ -208,6 +229,7 @@ const server = http.createServer((req, res) => {
     return void handleHook(req, res);
   }
   if (pathname === '/api/redmine/refresh') return handleRedmineRefresh(req, res);
+  if (pathname === '/api/calendar/connect') return void handleCalendarConnect(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' });
   if (pathname === '/api/health') {
     return send(res, 200, { ok: true, clients: wss.clients.size, sessions: state.sessions.size, events: state.eventCount });
