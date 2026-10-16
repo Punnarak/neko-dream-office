@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useOffice, useNow, refreshRedmine } from './useOffice.js';
-import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText, claudeDay, claudeMs, logTimeUrl, suggestHours, usualActivity, isResolved, todayBrief, mergeRequestText, endOfDay, parseClock, DAY_HOURS } from './office.js';
+import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText, claudeDay, claudeMs, logTimeUrl, suggestHours, usualActivity, isResolved, todayBrief, calendarDay, clockOf, meetingsDue, meetingKey, mergeRequestText, endOfDay, parseClock, DAY_HOURS } from './office.js';
 import { unlockAudio, playSound } from './sound.js';
 import { Cat, Kitten } from './components/Cat.jsx';
 import { OfficeBackdrop, STATIONS } from './components/OfficeScene.jsx';
@@ -35,6 +35,7 @@ export default function App() {
   const rmNew = useMemo(() => rmAlerts(office.redmine?.issues, rmSeen.seen), [office.redmine, rmSeen.seen]);
   useRedmineAlerts(office, rmNew, rmSeen.seen, notify, sound, () => setPanel('tasks'));
   const eod = useEndOfDay(office, notify, sound, () => setPanel('time'));
+  const meet = useMeetingReminder(office, notify, sound);
   const agents = agentsOf(session);
   const agent = agentId ? agents.find((a) => a.id === agentId) : null;
   // same order as kittenPlaces(agents): it sorts the same list the same way
@@ -63,7 +64,7 @@ export default function App() {
         </div>
         <div className="top-right">
           <SoundToggle sound={sound} />
-          <ThemeMenu look={look} notify={notify} sound={sound} eod={eod} />
+          <ThemeMenu look={look} notify={notify} sound={sound} eod={eod} meet={meet} calendar={office.calendar} />
           <ConnBadge office={office} />
         </div>
       </header>
@@ -158,7 +159,7 @@ export default function App() {
           {!live && office.lastMessageAt && (
             <p className="stale-note">ข้อมูลด้านล่างเป็นข้อมูลล่าสุดก่อนการเชื่อมต่อหลุด ({timeOf(office.lastMessageAt)}) — ไม่ใช่สถานะปัจจุบัน</p>
           )}
-          <TodayCard redmine={office.redmine} claudeTime={office.claudeTime} holidays={office.holidays} alerts={rmNew} now={now} eodAt={eod.at} onOpen={setPanel} />
+          <TodayCard redmine={office.redmine} calendar={office.calendar} claudeTime={office.claudeTime} holidays={office.holidays} alerts={rmNew} now={now} eodAt={eod.at} onOpen={setPanel} />
           <PanelTabs panel={shown} setPanel={setPanel} icon={animalOf(look.animal).icon} cat={CATS.find((c) => c.key === catKey)} agentName={agentId ? (agent ? agentLabel(agent) : 'Agent') : null} redmine={office.redmine} tokens={office.tokens} now={now} fresh={Object.keys(rmNew).length} />
           {shown === 'cat' && (agentId
             ? <AgentDetails agent={agent} session={session} now={now} animal={look.animal} onBack={() => setAgentId(null)} />
@@ -350,30 +351,107 @@ function useEndOfDay(office, notify, sound, onOpen) {
   return { at, set: (v) => { setAt(v); writePref('neko.eodAt', v); } };
 }
 
+// ---- 📅 ก่อนประชุม: one desktop notification per meeting, N minutes before it starts ----
+
+const MEET_LEADS = ['off', '1', '5', '10', '15'];
+const MEET_DONE_KEY = 'neko.meetDone'; // keys of meetings already reminded, so a reload never repeats them
+
+function useMeetingReminder(office, notify, sound) {
+  const [lead, setLead] = useState(() => readPref('neko.meetLead', '5'));
+  const cur = useRef();
+  cur.current = { office, notify, sound, lead };
+  useEffect(() => {
+    const check = () => {
+      const { office: o, notify: n, sound: snd, lead: l } = cur.current;
+      if (o.mode === 'demo' || o.conn !== 'live' || l === 'off') return;
+      const now = Date.now();
+      let done = [];
+      try { done = JSON.parse(readPref(MEET_DONE_KEY, '[]')); } catch { /* corrupt: start over */ }
+      if (!Array.isArray(done)) done = [];
+      const due = meetingsDue(o.calendar, now, Number(l), new Set(done));
+      if (!due.length) return;
+      // keep only keys of meetings that have not ended long ago
+      const keep = done.filter((k) => Number(String(k).split('|')[0]) > now - 86_400_000);
+      writePref(MEET_DONE_KEY, JSON.stringify([...keep, ...due.map(meetingKey)].slice(-100)));
+      if (snd.on) playSound('waiting');
+      if (!n.on || !notifySupported() || Notification.permission !== 'granted') return;
+      for (const e of due.slice(0, 3)) {
+        const mins = Math.max(1, Math.ceil((e.start - now) / 60_000));
+        try {
+          const note = new Notification(`📅 อีก ${mins} นาที: ${e.title}`, {
+            body: `${clockOf(e.start)}–${clockOf(e.end)}${e.location ? ` · ${e.location}` : ''}`,
+            tag: `neko-meet-${meetingKey(e)}`, requireInteraction: true, silent: !snd.on,
+          });
+          note.onclick = () => { window.focus(); note.close(); };
+        } catch { /* e.g. Android Chrome only allows notifications from a service worker */ }
+      }
+    };
+    check();
+    const id = setInterval(check, 20_000);
+    return () => clearInterval(id);
+  }, [office.calendar?.fetchedAt, lead]);
+  return { lead, set: (v) => { setLead(v); writePref('neko.meetLead', v); } };
+}
+
 // ---- เช้า: what needs me today, at the top of the side panel ----
 
-function TodayCard({ redmine, claudeTime, holidays, alerts, now, eodAt, onOpen }) {
+function TodayCard({ redmine, calendar, claudeTime, holidays, alerts, now, eodAt, onOpen }) {
   const [open, setOpen] = useState(() => readPref('neko.todayOpen', 'on') !== 'off');
-  if (!redmine?.configured || !redmine.fetchedAt) return null;
-  const off = offDays(holidays?.list, readLeave(), redmine.time?.leaveDays);
-  const b = todayBrief({ redmine, claudeTime, off, alerts, now });
+  const rmReady = !!(redmine?.configured && redmine.fetchedAt);
+  const cal = calendar?.fetchedAt ? calendarDay(calendar, now) : null;
+  if (!rmReady && !cal) return null;
+  const off = offDays(holidays?.list, readLeave(), redmine?.time?.leaveDays);
+  const b = todayBrief({ redmine: rmReady ? redmine : null, claudeTime, off, alerts, now });
   const d = new Date(now);
   const eodMins = parseClock(eodAt);
-  const evening = b.workday && b.now && eodMins !== null && d.getHours() * 60 + d.getMinutes() >= eodMins
-    && (b.now.short > 0 || b.now.unlogged.length > 0);
+  const afterEod = eodMins !== null && d.getHours() * 60 + d.getMinutes() >= eodMins;
+  const evening = rmReady && b.workday && b.now && afterEod && (b.now.short > 0 || b.now.unlogged.length > 0);
   const late = b.due.filter((x) => x.days < 0).length;
   const prevTodo = b.prev && (b.prev.short > 0 || b.prev.unlogged.length > 0);
   const olderMissing = b.missing.filter((x) => x !== b.prev?.date).length;
   const todo = (late ? 1 : 0) + (b.due.length - late ? 1 : 0) + (b.updates.length ? 1 : 0) + (b.unmerged.length ? 1 : 0) + (prevTodo ? 1 : 0) + (evening ? 1 : 0);
   const tickets = (rows) => rows.slice(0, 3).map((r) => (r.ticket ? `#${r.ticket}` : r.project || '?')).join(', ') + (rows.length > 3 ? ' …' : '');
+  // many meetings: hide the ones already over
+  const meetings = cal ? (cal.events.length > CAL_MAX ? cal.events.filter((e) => e.state !== 'past') : cal.events) : [];
+  const pastHidden = cal ? cal.events.length - meetings.length : 0;
+  const showTomorrow = cal && cal.tomorrow.length > 0 && (afterEod || cal.left === 0);
   return (
     <details className={`card today ${evening ? 'is-evening' : ''}`} open={open}
       onToggle={(e) => { setOpen(e.currentTarget.open); writePref('neko.todayOpen', e.currentTarget.open ? 'on' : 'off'); }}>
       <summary>
         <h2>{evening ? '🌙 ก่อนเลิกงาน' : '☀️ วันนี้'} <small>{longDay(b.today)}{!b.workday && ' · วันหยุด'}</small></h2>
-        {todo > 0 ? <span className="due tone-warn">{todo} เรื่อง</span> : <span className="due tone-done">เรียบร้อย</span>}
+        <span className="today-badges">
+          {cal?.next && <span className={`due tone-${cal.next.state === 'now' ? 'busy' : cal.next.state === 'soon' ? 'warn' : 'calm'}`} title={`นัดถัดไป: ${cal.next.title}`}>
+            📅 {cal.next.state === 'now' ? 'ประชุมอยู่' : clockOf(cal.next.start)}
+          </span>}
+          {rmReady && (todo > 0 ? <span className="due tone-warn">{todo} เรื่อง</span> : <span className="due tone-done">เรียบร้อย</span>)}
+        </span>
       </summary>
       <ul className="today-list">
+        {cal && (
+          <li className="today-cal">
+            <ul aria-label="นัดหมายวันนี้ (ปฏิทิน iCal)">
+              {pastHidden > 0 && <li className="muted">✓ ผ่านไปแล้ว {pastHidden} นัด</li>}
+              {meetings.map((e, i) => (
+                <li key={`cal-${i}-${e.start}`} className={`cal-${e.state}`} title={[e.title, e.location, e.calName].filter(Boolean).join(' · ')}>
+                  <span className="cal-time">{e.allDay ? 'ทั้งวัน' : `${clockOf(e.start)}${e.end > e.start ? `–${clockOf(e.end)}` : ''}`}</span>
+                  <span className="today-subj">{e.title}{e.location && <small className="muted"> · {e.location}</small>}</span>
+                  {e.state === 'now' && <span className="due tone-busy">ตอนนี้</span>}
+                  {e.state === 'soon' && <span className="due tone-warn">อีก {e.inMin} นาที</span>}
+                </li>
+              ))}
+              {cal.events.length === 0 && <li className="muted">📅 วันนี้ไม่มีนัดในปฏิทิน</li>}
+              {cal.events.length > 0 && cal.left === 0 && <li className="muted">✓ หมดนัดของวันนี้แล้ว</li>}
+              {showTomorrow && (
+                <li className="muted" title={cal.tomorrow.map((e) => `${e.allDay ? 'ทั้งวัน' : clockOf(e.start)} ${e.title}`).join('\n')}>
+                  <span className="cal-time">พรุ่งนี้</span>
+                  <span className="today-subj">{cal.tomorrow[0].allDay ? 'ทั้งวัน' : clockOf(cal.tomorrow[0].start)} {cal.tomorrow[0].title}{cal.tomorrow.length > 1 && ` (+${cal.tomorrow.length - 1} นัด)`}</span>
+                </li>
+              )}
+              {cal.errors.map((c) => <li key={`calerr-${c.name}`} className="tone-error">⚠ ปฏิทิน {c.name}: {c.error}</li>)}
+            </ul>
+          </li>
+        )}
         {b.due.slice(0, 4).map((x) => (
           <li key={`due-${x.id}`}>
             <span className={`due tone-${x.days < 0 ? 'error' : 'warn'}`}>{x.days < 0 ? `เลย ${-x.days} วัน` : 'ครบวันนี้'}</span>
@@ -407,11 +485,12 @@ function TodayCard({ redmine, claudeTime, holidays, alerts, now, eodAt, onOpen }
             {b.now.unlogged.length > 0 && <> · Claude ทำ {tickets(b.now.unlogged)} ยังไม่ลง</>}
           </button></li>
         )}
-        {todo === 0 && <li className="muted">✓ ไม่มีงานถึงกำหนด ไม่มีอัปเดตค้าง ไม่มี branch ค้าง merge และลงเวลาเมื่อวานครบแล้ว</li>}
+        {rmReady && todo === 0 && <li className="muted">✓ ไม่มีงานถึงกำหนด ไม่มีอัปเดตค้าง ไม่มี branch ค้าง merge และลงเวลาเมื่อวานครบแล้ว</li>}
       </ul>
     </details>
   );
 }
+const CAL_MAX = 6; // meetings shown before the finished ones are folded away
 
 function NotifySettings({ notify, sound }) {
   const { on, permission } = notify;
@@ -481,7 +560,7 @@ function useLook() {
   return { ...look, set: (name, value) => { setLook((l) => ({ ...l, [name]: value })); writePref(LOOK[name].pref, value); } };
 }
 
-function ThemeMenu({ look, notify, sound, eod }) {
+function ThemeMenu({ look, notify, sound, eod, meet, calendar }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef(null);
   const btn = useRef(null);
@@ -533,6 +612,15 @@ function ThemeMenu({ look, notify, sound, eod }) {
             </select>
           </div>
           <p className="pop-note">วันทำงาน ถ้าลงเวลาวันนี้ยังไม่ครบ {DAY_HOURS} ชม. หรือมีงานที่ Claude ทำแต่ยังไม่ลง: การ์ด “วันนี้” ขึ้นสีส้ม และเด้งแจ้งเตือน 1 ครั้งต่อวัน (ต้องเปิดแจ้งเตือนบนเดสก์ท็อป และเปิดหน้านี้ค้างไว้){notify.on ? '' : ' — ตอนนี้แจ้งเตือนบนเดสก์ท็อปปิดอยู่'}</p>
+          {calendar?.configured && (<>
+            <h3 id="set-meet">เตือนก่อนประชุม</h3>
+            <div className="seg" role="group" aria-labelledby="set-meet">
+              <select className="mini-btn" value={meet.lead} onChange={(e) => meet.set(e.target.value)} aria-label="เตือนก่อนประชุมกี่นาที">
+                {MEET_LEADS.map((t) => <option key={t} value={t}>{t === 'off' ? 'ปิด' : `${t} นาที`}</option>)}
+              </select>
+            </div>
+            <p className="pop-note">เด้งแจ้งเตือนครั้งเดียวต่อนัด (นัดจากปฏิทิน iCal ไม่นับนัดทั้งวัน) มีเสียงถ้าเปิดเสียงไว้{notify.on ? '' : ' — ตอนนี้แจ้งเตือนบนเดสก์ท็อปปิดอยู่ จะมีแค่เสียง'}</p>
+          </>)}
         </div>
       )}
     </div>

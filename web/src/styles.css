@@ -601,3 +601,12 @@ h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
 .link-btn { font: inherit; color: inherit; background: none; border: 0; padding: 2px 0; cursor: pointer; text-align: left; }
 .link-btn:hover { text-decoration: underline; }
 .today-list a { color: inherit; font-weight: 700; }
+.today-badges { display: flex; gap: 4px; flex: none; }
+.today-cal ul { list-style: none; margin: 0; padding: 0 0 6px; display: grid; gap: 3px; width: 100%; border-bottom: 1px dashed var(--line); }
+.today-cal ul li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cal-time { flex: none; min-width: 84px; font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+.cal-past { opacity: .5; }
+.cal-past .today-subj { text-decoration: line-through; }
+.cal-now .cal-time, .cal-now .today-subj { color: var(--busy); font-weight: 700; }
+.cal-soon .cal-time { color: var(--warn); font-weight: 700; }
+.today-list li.tone-error { color: var(--error); font-size: 12px; }

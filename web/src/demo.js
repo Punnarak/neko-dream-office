@@ -68,6 +68,16 @@ export function runDemo(dispatch) {
   const demoTime = demoWorkTime(createdAt);
   dispatch({ type: 'redmine', redmine: { configured: true, baseUrl: null, issues: demoIssues, total: demoIssues.length, gone: demoGone, unmerged: demoUnmerged, demoSeen, time: demoTime, timeError: null, fetchedAt: createdAt, error: null, errorAt: null, loading: false } });
   dispatch({ type: 'holidays', holidays: { list: demoHolidays(demoTime.daily), configured: true, error: null } });
+  // FAKE meetings from an iCal feed (demo only): one just over, one now, one soon, one later, one tomorrow
+  const day0 = new Date(createdAt); day0.setHours(0, 0, 0, 0);
+  const atMin = (m) => createdAt + m * 60_000;
+  dispatch({ type: 'calendar', calendar: { configured: true, fetchedAt: createdAt, calendars: [{ name: 'งาน', error: null }], events: [
+    { start: atMin(-90), end: atMin(-60), allDay: false, title: '(demo) Daily stand-up', location: 'Teams', cal: 0 },
+    { start: atMin(-10), end: atMin(20), allDay: false, title: '(demo) Review API ชำระเงิน', location: 'ห้องประชุม 3', cal: 0 },
+    { start: atMin(35), end: atMin(65), allDay: false, title: '(demo) คุยกับทีม QA', location: null, cal: 0 },
+    { start: atMin(180), end: atMin(240), allDay: false, title: '(demo) Sprint planning', location: null, cal: 0 },
+    { start: day0.getTime() + 33 * 3600_000, end: day0.getTime() + 34 * 3600_000, allDay: false, title: '(demo) Demo ลูกค้า', location: null, cal: 0 },
+  ] } });
   let demoTok = demoTokens(createdAt);
   dispatch({ type: 'tokens', tokens: demoTok });
   // FAKE time Claude worked per ticket (demo only)

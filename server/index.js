@@ -13,6 +13,7 @@ import { UsageTracker, subagentTranscript } from './usage.js';
 import { DailyTokens } from './tokens.js';
 import { HolidayFile } from './holidays.js';
 import { ClaudeTime } from './claudetime.js';
+import { CalendarFeed } from './calendar.js';
 
 const HOST = process.env.NEKO_HOST || '127.0.0.1';
 const PORT = Number(process.env.NEKO_PORT || 4777);
@@ -70,6 +71,12 @@ const redmine = new RedmineFeed({
   onUpdate: (data) => broadcast({ type: 'redmine', redmine: data }),
 });
 
+// Today's meetings from the iCal feeds in ~/.config/neko-dream-office/calendar.json (URLs never leave the backend).
+const calendar = new CalendarFeed({
+  intervalMs: Number(process.env.NEKO_CALENDAR_INTERVAL || 900) * 1000,
+  onUpdate: (data) => broadcast({ type: 'calendar', calendar: data }),
+});
+
 // Daily token totals across all transcripts: one background scan at startup, then incremental
 // re-reads at most every TOKENS_MS and only while a page is open.
 const TOKENS_MS = Math.max(30, Number(process.env.NEKO_TOKENS_INTERVAL || 60)) * 1000;
@@ -81,9 +88,11 @@ let tick = null;
 function periodic() {
   if (holidays.check()) broadcast({ type: 'holidays', holidays: holidays.snapshot() });
   void tokens.refreshIfDue(TOKENS_MS - 5000);
+  calendar.checkDay();
 }
 function setActive(active) {
   redmine.setActive(active);
+  calendar.setActive(active);
   if (active && !tick) {
     periodic();
     tick = setInterval(periodic, TOKENS_MS);
@@ -93,7 +102,7 @@ function setActive(active) {
     tick = null;
   }
 }
-const fullState = () => ({ ...state.snapshot(), redmine: redmine.snapshot(), tokens: tokens.snapshot(), holidays: holidays.snapshot(), claudeTime: claudeTime.snapshot() });
+const fullState = () => ({ ...state.snapshot(), redmine: redmine.snapshot(), tokens: tokens.snapshot(), holidays: holidays.snapshot(), claudeTime: claudeTime.snapshot(), calendar: calendar.snapshot() });
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -258,6 +267,7 @@ server.on('error', (err) => {
 server.listen(PORT, HOST, () => {
   console.log(`[neko] Neko Dream Office listening on http://${HOST}:${PORT}  (hooks -> POST /hook, live -> /ws)`);
   console.log(redmine.config ? `[neko] Redmine: enabled (${redmine.config.source})` : '[neko] Redmine: not configured');
+  console.log(calendar.config ? `[neko] Calendar: ${calendar.config.length} iCal feed(s)` : '[neko] Calendar: not configured');
   const t0 = Date.now();
   tokens.refresh().then(() => console.log(`[neko] token history: scanned ${tokens.files.size} transcript files in ${Date.now() - t0} ms`));
 });

@@ -366,3 +366,37 @@ test('mergeRequestText: greeting, subject, url, then one line per branch', () =>
     [MERGE_GREETING, '(test) fix login', 'https://rm.example/issues/12345', 'app-a: ticket/212']);
   assert.equal(mergeRequestText({ id: 5, subject: 's' }, [], 'https://rm.example/').split('\n')[2], 'https://rm.example/issues/5');
 });
+
+test('calendarDay: today\'s meetings with past / now / soon / later, and tomorrow', async () => {
+  const { calendarDay } = await import('./office.js');
+  const at = (h, m = 0, dd = 0) => new Date(2026, 9, 15 + dd, h, m).getTime();
+  const now = at(10, 50);
+  const cal = { configured: true, fetchedAt: now, calendars: [{ name: 'Work', error: null }, { name: 'Me', error: 'HTTP 401' }], events: [
+    { start: at(0), end: at(0, 0, 1), allDay: true, title: 'Team day', location: null, cal: 0 },
+    { start: at(9), end: at(9, 30), allDay: false, title: 'Standup', location: null, cal: 0 },
+    { start: at(10, 30), end: at(11), allDay: false, title: 'Review', location: 'Room 2', cal: 0 },
+    { start: at(11, 0), end: at(12), allDay: false, title: 'Planning', location: null, cal: 0 },
+    { start: at(14), end: at(15), allDay: false, title: 'Retro', location: null, cal: 0 },
+    { start: at(9, 0, 1), end: at(10, 0, 1), allDay: false, title: 'Tomorrow sync', location: null, cal: 0 },
+  ] };
+  const c = calendarDay(cal, now);
+  assert.deepEqual(c.events.map((e) => [e.title, e.state]), [['Team day', 'allday'], ['Standup', 'past'], ['Review', 'now'], ['Planning', 'soon'], ['Retro', 'later']]);
+  assert.equal(c.events[3].inMin, 10);
+  assert.equal(c.next.title, 'Review');
+  assert.equal(c.left, 3);
+  assert.deepEqual(c.tomorrow.map((e) => e.title), ['Tomorrow sync']);
+  assert.deepEqual(c.errors.map((e) => e.name), ['Me']);
+  assert.equal(c.events[1].calName, 'Work');
+  assert.equal(calendarDay({ configured: false }, now), null);
+});
+
+test('meetingsDue: timed meetings starting within the lead time, once each', async () => {
+  const { meetingsDue, meetingKey } = await import('./office.js');
+  const now = Date.UTC(2026, 9, 16, 3, 0);
+  const m = (min, title, allDay = false) => ({ start: now + min * 60_000, end: now + (min + 30) * 60_000, allDay, title, cal: 0 });
+  const cal = { configured: true, events: [m(-5, 'started'), m(3, 'soon'), m(5, 'edge'), m(6, 'later'), m(2, 'all', true)] };
+  assert.deepEqual(meetingsDue(cal, now, 5).map((e) => e.title), ['soon', 'edge']);
+  assert.deepEqual(meetingsDue(cal, now, 5, new Set([meetingKey(cal.events[1])])).map((e) => e.title), ['edge']);
+  assert.deepEqual(meetingsDue(cal, now, 0), []);
+  assert.deepEqual(meetingsDue(null, now, 5), []);
+});

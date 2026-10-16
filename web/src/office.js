@@ -34,6 +34,7 @@ export const initialState = {
   redmine: null,      // Redmine issues pushed by the backend (null = not received yet)
   tokens: null,       // daily token totals across all transcripts (null = not received yet)
   holidays: null,     // { list: [{ date, name }], configured, error } from the optional holidays.json
+  calendar: null,     // { configured, events: [{ start, end, allDay, title, location, cal }], calendars: [{ name, error }], fetchedAt } — today + tomorrow
   claudeTime: null,   // { days: [{ date, items: [{ ticket, project, ms }] }] } — how long Claude worked per ticket
   lastEvent: null,    // the newest live hook event; snapshots never set it, so reloads stay silent
   redmineLive: false, // true once Redmine data came as a live push (not a snapshot): only then may it alert
@@ -48,7 +49,7 @@ export function reducer(state, action) {
     case 'snapshot': {
       const sessions = {};
       for (const s of action.sessions) sessions[s.id] = s;
-      return { ...state, conn: 'live', serverStartedAt: action.serverStartedAt, sessions, feed: action.feed.slice(-FEED_LIMIT), redmine: action.redmine ?? null, redmineLive: false, tokens: action.tokens ?? null, holidays: action.holidays ?? null, claudeTime: action.claudeTime ?? null, lastEvent: null, lastMessageAt: Date.now() };
+      return { ...state, conn: 'live', serverStartedAt: action.serverStartedAt, sessions, feed: action.feed.slice(-FEED_LIMIT), redmine: action.redmine ?? null, redmineLive: false, tokens: action.tokens ?? null, holidays: action.holidays ?? null, claudeTime: action.claudeTime ?? null, calendar: action.calendar ?? null, lastEvent: null, lastMessageAt: Date.now() };
     }
     case 'event': {
       const feed = state.feed.length >= FEED_LIMIT ? state.feed.slice(1 - FEED_LIMIT) : state.feed.slice();
@@ -63,6 +64,8 @@ export function reducer(state, action) {
       return { ...state, tokens: action.tokens, lastMessageAt: Date.now() };
     case 'holidays':
       return { ...state, holidays: action.holidays, lastMessageAt: Date.now() };
+    case 'calendar':
+      return { ...state, calendar: action.calendar, lastMessageAt: Date.now() };
     case 'claudeTime':
       return { ...state, claudeTime: action.claudeTime, lastMessageAt: Date.now() };
     default:
@@ -541,4 +544,46 @@ export function rmFreshAlerts(known, alerts) {
 export function rmNotifyText(alert, subject) {
   const s = (subject || '').length > 60 ? `${subject.slice(0, 59)}…` : subject || '';
   return { title: '📋 Redmine', body: `#${alert.id} ${alert.say}${s ? ` — ${s}` : ''}`, tag: `neko-rm-${alert.id}` };
+}
+
+// ---- ปฏิทิน (iCal): today's and tomorrow's meetings for the "วันนี้" card ----
+
+const SOON_MS = 15 * 60_000;
+
+// calendar = backend snapshot. Today's events get a state: 'past' | 'now' | 'soon' (starts within 15 min)
+// | 'later', and `inMin` (minutes until start) for the next one. All-day events are listed first.
+export function calendarDay(calendar, now) {
+  if (!calendar?.configured) return null;
+  const d = new Date(now);
+  const at = (n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n).getTime();
+  const [todayStart, tomorrowStart, dayAfter] = [at(0), at(1), at(2)];
+  const cals = calendar.calendars || [];
+  const events = (calendar.events || []).map((e) => ({ ...e, calName: cals.length > 1 ? cals[e.cal]?.name || null : null }));
+  // overlaps [a, b); a zero-length event counts when it starts inside
+  const within = (e, a, b) => e.start < b && (e.end > a || e.start >= a);
+  const todayList = events.filter((e) => within(e, todayStart, tomorrowStart)).map((e) => {
+    if (e.allDay) return { ...e, state: 'allday', inMin: null };
+    const state = e.start <= now ? (now < e.end ? 'now' : 'past') : e.start - now <= SOON_MS ? 'soon' : 'later';
+    return { ...e, state, inMin: state === 'soon' || state === 'later' ? Math.ceil((e.start - now) / 60_000) : null };
+  }).sort((a, b) => (b.allDay - a.allDay) || a.start - b.start);
+  const upcoming = todayList.filter((e) => e.state === 'now' || e.state === 'soon' || e.state === 'later');
+  return {
+    today: dayOf(now),
+    events: todayList,
+    next: upcoming[0] || null,
+    left: upcoming.length,
+    tomorrow: events.filter((e) => e.start >= tomorrowStart && e.start < dayAfter),
+    errors: cals.filter((c) => c.error),
+  };
+}
+
+// "09:30" in local time
+export const clockOf = (ms) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+
+// Meetings to remind about now: timed events starting within `leadMin` minutes that were not
+// reminded yet (`done` = keys already shown). Key = start + title, so a moved meeting reminds again.
+export const meetingKey = (e) => `${e.start}|${e.title}`;
+export function meetingsDue(calendar, now, leadMin, done = new Set()) {
+  if (!calendar?.configured || !(leadMin > 0)) return [];
+  return (calendar.events || []).filter((e) => !e.allDay && e.start > now && e.start - now <= leadMin * 60_000 && !done.has(meetingKey(e)));
 }

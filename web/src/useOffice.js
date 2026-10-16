@@ -34,7 +34,7 @@ export function useOffice() {
       ws.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch { return; }
-        if (msg.type === 'snapshot' || msg.type === 'event' || msg.type === 'session' || msg.type === 'redmine' || msg.type === 'tokens' || msg.type === 'holidays' || msg.type === 'claudeTime') dispatch(msg);
+        if (msg.type === 'snapshot' || msg.type === 'event' || msg.type === 'session' || msg.type === 'redmine' || msg.type === 'tokens' || msg.type === 'holidays' || msg.type === 'claudeTime' || msg.type === 'calendar') dispatch(msg);
       };
       ws.onclose = () => {
         if (closed) return;
