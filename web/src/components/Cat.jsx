@@ -114,7 +114,7 @@ function Eyes({ pose }) {
   }
   const r = pose === 'alert' ? 5.2 : pose === 'busy' ? 3.8 : 4.4;
   return (
-    <g fill={INK}>
+    <g fill={INK} className="eyes">
       <ellipse cx="48" cy="57" rx={r} ry={r + 0.8} />
       <ellipse cx="72" cy="57" rx={r} ry={r + 0.8} />
       <circle cx="49.6" cy="55" r="1.5" fill="#fff" />
@@ -211,20 +211,23 @@ function DeskProp({ name, accent, active }) {
   }
 }
 
-export function Cat({ cat, pose, scene, animal = 'cat' }) {
+// `act` = a decorative idle move (lively.js): yawn | stretch | groom | look | cheer. Never a status.
+export function Cat({ cat, pose, scene, animal = 'cat', act = null }) {
   const busy = pose === 'busy';
   const p = partsOf(animal);
   const sc = DECOR[scene]?.cat || {}; // scene accessories/desk/props; office = none of these
   const Prop = sc.props?.[cat.name];
   return (
-    <svg viewBox="0 0 120 120" className={`cat pose-${pose}`} role="img" aria-label={`${cat.name} ${cat.role}`}>
+    <svg viewBox="0 0 120 120" className={`cat pose-${pose} ${act ? `act-${act}` : ''}`} role="img" aria-label={`${cat.name} ${cat.role}`}>
       {sc.back}
       {/* tail */}
-      {p.tail.desk(cat.fur, INK)}
-      {/* body + head */}
+      <g className="sway">{p.tail.desk(cat.fur, INK)}</g>
+      {/* body + head (the "breathe" group rises a little, decor only) */}
+      <g className="breathe">
       <ellipse cx="60" cy="88" rx="25" ry="19" fill={cat.fur} stroke={INK} strokeWidth="1.2" />
       {sc.body?.(cat.accent)}
-      {p.ears(cat.fur, INK)}
+      <g className="head">
+      <g className="ears">{p.ears(cat.fur, INK)}</g>
       <ellipse cx="60" cy="57" rx="28" ry="23" fill={cat.fur} stroke={INK} strokeWidth="1.2" />
       {p.frontEars?.(cat.fur, INK, cat.accent)}
       <ellipse cx="41" cy="66" rx="5" ry="3" fill={PINK} opacity=".55" />
@@ -233,6 +236,9 @@ export function Cat({ cat, pose, scene, animal = 'cat' }) {
       <Eyes pose={pose} />
       {!(sc.hat && HEADWEAR.includes(cat.name)) && <Accessory name={cat.name} accent={cat.accent} />}
       {sc.hat?.(cat.accent)}
+      {act === 'yawn' && <ellipse className="yawn" cx="60" cy="69" rx="4.5" ry="5.5" fill="#b0506a" stroke={INK} strokeWidth="1" />}
+      </g>
+      </g>
       {/* desk: lit top face receding toward the wall + shaded front face */}
       <path d="M13 95H107L116 105H4z" fill="var(--desk-top)" strokeLinejoin="round" stroke="var(--desk-top)" strokeWidth="2" />
       <rect x="4" y="104" width="112" height="15" rx="3" fill="var(--desk)" />
@@ -243,6 +249,7 @@ export function Cat({ cat, pose, scene, animal = 'cat' }) {
       {/* paws on the desk edge — they tap only while a real tool is running */}
       <ellipse className="paw paw-l" cx="48" cy="103" rx="6" ry="4" fill={cat.fur} stroke={INK} strokeWidth="1" />
       <ellipse className="paw paw-r" cx="66" cy="103" rx="6" ry="4" fill={cat.fur} stroke={INK} strokeWidth="1" />
+      {act === 'groom' && <ellipse className="groom-paw" cx="74" cy="72" rx="6" ry="4.5" fill={cat.fur} stroke={INK} strokeWidth="1" />}
 
       {/* decorative only */}
       <g className="decor" aria-hidden="true">
@@ -250,6 +257,8 @@ export function Cat({ cat, pose, scene, animal = 'cat' }) {
         {pose === 'error' && <path d="M88 38q4 6 0 9q-4-3 0-9z" fill="#9fd3f7" />}
         {pose === 'alert' && <text x="88" y="32" className="bang">!</text>}
         {busy && <g fill="#ffd86b"><path d="M20 30l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" /><circle cx="100" cy="22" r="2" /></g>}
+        {act === 'groom' && <g fill="#9ad8f0"><circle cx="86" cy="62" r="1.6" /><circle cx="90" cy="56" r="1.2" /></g>}
+        {act === 'cheer' && <g fill="#ffd86b"><path d="M16 22l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" /><path d="M100 16l1.5 4 4 1.5-4 1.5-1.5 4-1.5-4-4-1.5 4-1.5z" /></g>}
       </g>
     </svg>
   );
@@ -283,7 +292,7 @@ export function Kitten({ agent, pose, scene, chub = null, animal = 'cat' }) {
     <svg viewBox="14 8 92 108" className={`kitten pose-${pose} chub-${chub ?? 'unknown'}`} aria-hidden="true">
       {sc.back}
       {/* tail — follows the side of the body */}
-      <g className="tail" style={{ transform: `translateX(${rx - 19}px)` }}>{p.tail.kitten(fur, line)}</g>
+      <g className="tail" style={{ transform: `translateX(${rx - 19}px)` }}><g className="sway">{p.tail.kitten(fur, line)}</g></g>
       {/* body (width = real token usage) + belly + paws */}
       <ellipse className="bod" cx="60" cy="98" style={{ rx: `${rx}px`, ry: `${ry}px` }} rx={rx} ry={ry} fill={fur} stroke={line} strokeWidth="1.2" />
       {chub >= 2 && <ellipse className="bod" cx="60" cy="101" style={{ rx: `${rx * 0.55}px`, ry: `${ry * 0.55}px` }} rx={rx * 0.55} ry={ry * 0.55} fill="#fff" opacity={dark ? 0.16 : 0.42} />}

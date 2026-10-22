@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useOffice, useNow, refreshRedmine, connectCalendar } from './useOffice.js';
 import { CATS, STATUS, STALE_MS, catView, categoryOf, pickDefaultSession, timeOf, ago, daysUntil, sortIssues, alertFor, notifyDecision, allowSound, agentsOf, agentLabel, kittenPlaces, chubbiness, formatTokens, CHUBBY, workStats, offDays, tokenStats, dowOf, isWeekend, fmtHours, fmtShort, agentShort, countAgents, KITTEN_NARROW, KITTEN_SPOTS_NARROW, rmAlerts, rmMarkSeen, rmParseSeen, rmFreshAlerts, rmNotifyText, claudeDay, claudeMs, logTimeUrl, suggestHours, usualActivity, isResolved, todayBrief, calendarDay, clockOf, meetingsDue, meetingKey, mergeRequestText, endOfDay, parseClock, DAY_HOURS } from './office.js';
 import { unlockAudio, playSound } from './sound.js';
+import { dayPhase, clockAngles, pickIdleAct, eventAct, partyDue, meetingMood } from './lively.js';
+import { RoomLight, Ambient, MeetingSign, YarnBall, Confetti, usePetting, Hearts, useCatActs } from './components/Lively.jsx';
 import { Cat, Kitten } from './components/Cat.jsx';
 import { OfficeBackdrop, STATIONS } from './components/OfficeScene.jsx';
 import { SCENES, flavorOf } from './scenes.js';
@@ -36,6 +38,14 @@ export default function App() {
   useRedmineAlerts(office, rmNew, rmSeen.seen, notify, sound, () => setPanel('tasks'));
   const eod = useEndOfDay(office, notify, sound, () => setPanel('time'));
   const meet = useMeetingReminder(office, notify, sound);
+  // ความมีชีวิต: decoration from the real clock, calendar and events (components/Lively.jsx)
+  const lively = look.lively === 'on' && !prefersReducedMotion();
+  const poses = Object.fromEntries(cats.map((c) => [c.key, catView(c, session, office.conn, now).pose]));
+  const catActs = useCatActs({ poses, lastEvent: office.lastEvent, sessionId, enabled: lively && live, pickIdleAct, eventAct });
+  const pets = usePetting(() => { if (sound.on) playSound('purr'); });
+  const phase = lively ? dayPhase(now) : 'day';
+  const mood = lively && office.calendar?.fetchedAt ? meetingMood(calendarDay(office.calendar, now)) : null;
+  const party = useParty(office, lively, sound, catActs.cheer);
   const agents = agentsOf(session);
   const agent = agentId ? agents.find((a) => a.id === agentId) : null;
   // same order as kittenPlaces(agents): it sorts the same list the same way
@@ -98,7 +108,10 @@ export default function App() {
         <div className="left">
         <section className="room" aria-label="Office">
           <div className="scene">
-            <OfficeBackdrop scene={look.scene} />
+            <OfficeBackdrop scene={look.scene} phase={phase} clock={lively ? clockAngles(now) : null} bell={mood?.kind === 'soon'} />
+            {lively && <><RoomLight phase={phase} /><Ambient scene={look.scene} phase={phase} /><YarnBall /></>}
+            <MeetingSign mood={mood} />
+            <Confetti run={party.run} onDone={party.done} />
             <RoomBanner office={office} session={session} now={now} />
             <Corkboard redmine={office.redmine} now={now} fresh={Object.keys(rmNew).length} onOpen={() => setPanel('tasks')} />
             {cats.map((cat) => {
@@ -111,6 +124,7 @@ export default function App() {
                   className={`station desk-${cat.key} ${pos.big ? 'big' : ''} ${pos.left > 60 ? 'edge-right' : ''} ${!agentId && catKey === cat.key ? 'selected' : ''}`}
                   style={{ left: `${pos.left}%`, top: `${pos.top}%` }}
                   onClick={() => { setCatKey(cat.key); setAgentId(null); setPanel('cat'); }}
+                  onPointerMove={lively ? () => pets.pet(cat.key) : undefined}
                   aria-pressed={!agentId && catKey === cat.key}
                   aria-label={`${cat.name} ${cat.role}${v.chip ? ' — ' + v.chip.text : ''}`}
                 >
@@ -124,7 +138,8 @@ export default function App() {
                       </span>
                     )}
                   </span>
-                  <Cat cat={cat} pose={v.pose} scene={look.scene} animal={look.animal} />
+                  <Cat cat={cat} pose={v.pose} scene={look.scene} animal={look.animal} act={catActs.acts[cat.key]} />
+                  <Hearts hearts={pets.hearts[cat.key]} />
                   <span className="plate"><b>{cat.name}</b><span>{cat.role}</span></span>
                 </button>
               );
@@ -136,11 +151,13 @@ export default function App() {
                 // desktop and phone layouts both come from kittenPlaces; CSS picks one by the room's width
                 style={{ '--kl': `${left}%`, '--kt': `${top}%`, '--kln': `${narrowPlaces[i].left}%`, '--ktn': `${narrowPlaces[i].top}%` }}
                 onClick={() => { setAgentId(a.id); setPanel('cat'); }}
+                onPointerMove={lively ? () => pets.pet(`k:${a.id}`) : undefined}
                 aria-pressed={agentId === a.id}
                 aria-label={`agent ${agentLabel(a)} — ${a.tool ? `ใช้ ${a.tool.name}` : 'ว่าง รอบนพรม'} — ${tokenText(a.usage)}`}
                 title={`${agentLabel(a)}${a.tool ? ` · ${a.tool.name}${a.tool.summary ? ` · ${a.tool.summary}` : ''}` : ' · ว่าง'} · ${tokenText(a.usage)}`}
               >
                 <Kitten agent={a} pose={!live ? 'off' : a.tool ? 'busy' : 'awake'} scene={look.scene} chub={chubbiness(a.usage)} animal={look.animal} />
+                <Hearts hearts={pets.hearts[`k:${a.id}`]} />
                 <span className="kitten-tag"><span className="tag-full">{agentLabel(a)}</span><span className="tag-short" aria-hidden="true">{agentShort(a)}</span></span>
               </button>
             ))}
@@ -149,7 +166,7 @@ export default function App() {
           <p className="legend">
             <span className="chip tone-busy sample"><i className="live-dot" />บับเบิล</span> = สถานะจริงจาก hooks ·
             ลูกแมว = AI agent จริง (Main + subagent) นั่งข้างโต๊ะของเครื่องมือที่ใช้อยู่ ว่างแล้วรอบนพรม ·
-            แมว 6 ตัวเป็นหัวหน้าโต๊ะ (บทบาท) · ห้อง ของตกแต่ง และท่านอน zzz = ตกแต่ง
+            แมว 6 ตัวเป็นหัวหน้าโต๊ะ (บทบาท) · ห้อง ของตกแต่ง ท่านอน zzz และท่าหาว/บิดขี้เกียจ = ตกแต่ง · ท้องฟ้า นาฬิกา และป้ายประชุม = เวลาจริง/ปฏิทินจริง
           </p>
         </section>
         <div className={`feed-wrap ${live ? '' : 'stale-data'}`}><Feed feed={office.feed} sessionId={sessionId} /></div>
@@ -349,6 +366,26 @@ function useEndOfDay(office, notify, sound, onOpen) {
     return () => clearInterval(id);
   }, [office.redmine?.fetchedAt, at]); // also re-check as soon as fresh Redmine data arrives
   return { at, set: (v) => { setAt(v); writePref('neko.eodAt', v); } };
+}
+
+// ---- 🎉 ลงเวลาครบ: confetti + cheering cats once a day when today's Redmine time reaches the target ----
+
+const PARTY_KEY = 'neko.partyDone';
+const prefersReducedMotion = () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+function useParty(office, lively, sound, cheer) {
+  const [run, setRun] = useState(false);
+  const time = office.redmine?.time;
+  useEffect(() => {
+    if (!lively || office.mode === 'demo' || office.conn !== 'live' || !time) return;
+    const date = partyDue(time.todayHours, DAY_HOURS, time.today, readPref(PARTY_KEY, ''));
+    if (!date) return;
+    writePref(PARTY_KEY, date);
+    setRun(true);
+    cheer();
+    if (sound.on) playSound('completed');
+  }, [time?.todayHours, time?.today, lively]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { run, done: () => setRun(false) };
 }
 
 // ---- 📅 ก่อนประชุม: one desktop notification per meeting, N minutes before it starts ----
@@ -588,6 +625,7 @@ const LOOK = {
   palette: { pref: 'neko.palette', attr: 'data-palette', keys: PALETTES.map(([k]) => k) },
   scene: { pref: 'neko.scene', attr: 'data-scene', keys: SCENES.map((x) => x.key) },
   animal: { pref: 'neko.animal', attr: 'data-animal', keys: ANIMALS.map((x) => x.key) },
+  lively: { pref: 'neko.lively', attr: 'data-lively', keys: ['on', 'off'] },
 };
 const lookPref = (name) => { const { pref, keys } = LOOK[name]; const v = readPref(pref, keys[0]); return keys.includes(v) ? v : keys[0]; };
 
@@ -599,7 +637,7 @@ function applyLook(name, value) {
 }
 
 function useLook() {
-  const [look, setLook] = useState(() => ({ theme: lookPref('theme'), palette: lookPref('palette'), scene: lookPref('scene'), animal: lookPref('animal') }));
+  const [look, setLook] = useState(() => ({ theme: lookPref('theme'), palette: lookPref('palette'), scene: lookPref('scene'), animal: lookPref('animal'), lively: lookPref('lively') }));
   useEffect(() => { for (const name of Object.keys(LOOK)) applyLook(name, look[name]); }, [look]);
   return { ...look, set: (name, value) => { setLook((l) => ({ ...l, [name]: value })); writePref(LOOK[name].pref, value); } };
 }
@@ -648,6 +686,12 @@ function ThemeMenu({ look, notify, sound, eod, meet, calendar }) {
             {PALETTES.map(([k, label, color]) => option('palette', k, `สีธีม${label}`,
               <><i className="swatch" style={{ background: color }} aria-hidden="true" /> {label}</>))}
           </div>
+          <h3 id="theme-lively">ความมีชีวิต</h3>
+          <div className="seg" role="group" aria-labelledby="theme-lively">
+            {option('lively', 'on', 'ความมีชีวิต เปิด', <><span aria-hidden="true">🐾</span> เปิด</>)}
+            {option('lively', 'off', 'ความมีชีวิต ปิด', <><span aria-hidden="true">🖼</span> ภาพนิ่ง</>)}
+          </div>
+          <p className="pop-note">ท้องฟ้าและนาฬิกาตามเวลาจริง · แมวกระพริบตา หาว บิดขี้เกียจ · ลูบแมวได้ · ป้ายประชุมจากปฏิทิน · ฉลองเมื่อลงเวลาครบ — เป็นของตกแต่ง ไม่ใช่สถานะ (ปิดเองถ้าเครื่องตั้งลดการเคลื่อนไหว)</p>
           <NotifySettings notify={notify} sound={sound} />
           <h3 id="set-eod">เตือนก่อนเลิกงาน</h3>
           <div className="seg" role="group" aria-labelledby="set-eod">

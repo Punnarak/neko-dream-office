@@ -37,6 +37,10 @@ const SOUNDS = {
     note({ at: t, f1: 440, f2: 300, dur: 0.18, type: 'triangle', gain: 0.13 });
     note({ at: t + 0.2, f1: 330, f2: 220, dur: 0.26, type: 'triangle', gain: 0.13 });
   },
+  // soft "prrr" when a cat is petted: a quick low flutter
+  purr: (t) => {
+    for (let i = 0; i < 7; i++) note({ at: t + i * 0.07, f1: 92 + (i % 2) * 8, dur: 0.06, type: 'triangle', gain: 0.05 });
+  },
   // one clear bell
   completed: (t) => {
     note({ at: t, f1: 1319, dur: 0.45, gain: 0.12 });

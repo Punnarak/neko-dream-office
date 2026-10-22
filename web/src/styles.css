@@ -616,3 +616,112 @@ h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
 .cal-connect input:focus { outline: 2px solid var(--sel); outline-offset: 0; }
 .cal-connect .pop-note { margin: 0; }
 .cal-connect-err { margin: 0; font-size: 12px; color: var(--error); }
+
+/* ---------- ความมีชีวิต (lively): decoration only, never a status. Off with ⚙️ → ภาพนิ่ง
+   (data-lively="off") or the system's reduced-motion setting. transform/opacity only. ---------- */
+.room-tint { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: multiply; transition: background-color 3s; }
+.tint-dawn { background: #fff1e8; }
+.tint-dusk { background: #ffdcc8; }
+.tint-night { background: #aeb3e2; }
+.lamp-light { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: screen;
+  background: radial-gradient(circle at 25% 15%, #ffe9a8 0, #ffe9a800 14%), radial-gradient(circle at 50% 15%, #ffe9a8 0, #ffe9a800 14%), radial-gradient(circle at 75% 15%, #ffe9a8 0, #ffe9a800 14%); }
+.lamp-dusk { opacity: .35; }
+.lamp-night { opacity: .7; }
+.ambient { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+.mote { position: absolute; left: var(--x); top: var(--y); width: .45cqi; height: .45cqi; border-radius: 50%; background: #fff; opacity: 0; }
+.kind-firefly .mote { width: .55cqi; height: .55cqi; background: #fff6a8; box-shadow: 0 0 .9cqi .3cqi #fff3a080; }
+.kind-sparkle .mote { width: auto; height: auto; background: none; color: #b6a7ea; font-size: 1.3cqi; line-height: 1; }
+.kind-petal .mote { width: .9cqi; height: .6cqi; border-radius: 80% 0 80% 0; background: #f6b6cc; top: calc(var(--y) - 20%); }
+.kind-steam .mote { width: 1.4cqi; height: 1.4cqi; background: #ffffff70; filter: blur(2px); }
+/* sits exactly on the framed wall sign (svg 40,90 150×64 in a 1000×620 room) */
+.meeting-sign { position: absolute; z-index: 1; left: 3.7%; top: 14.2%; width: 15.6%; height: 10.9%; box-sizing: border-box; padding: 0 .6cqi;
+  border-radius: 1.2cqi; background: #fffaf0; border: .6cqi solid var(--wood); color: #4a3b52;
+  display: grid; align-content: center; text-align: center; transform-origin: 50% -30%; font-size: clamp(7px, 1.05cqi, 12px); line-height: 1.25; }
+.meeting-sign b { color: #3d8f74; white-space: nowrap; font-size: 1.15em; }
+.meeting-sign small { color: #8a7d93; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meeting-sign.sign-soon b { color: #c2702a; }
+.yarn { position: absolute; z-index: 2; left: 63%; top: 87%; width: 3.6%; padding: 0; border: 0; background: none; cursor: pointer; border-radius: 50%; }
+.yarn svg { display: block; width: 100%; height: auto; overflow: visible; filter: drop-shadow(0 3px 2px #4a3b5230); }
+.yarn:focus-visible { outline: 3px solid var(--sel); outline-offset: 2px; }
+.confetti { position: absolute; inset: 0; z-index: 6; pointer-events: none; overflow: hidden; }
+.confetti span { position: absolute; top: -4%; left: var(--x); width: .8cqi; height: 1.3cqi; border-radius: 2px; transform: rotate(var(--r)); }
+.party-note { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); margin: 0; padding: 1cqi 2.4cqi; border-radius: 999px;
+  background: var(--card); border: 2px solid var(--done); font-weight: 800; font-size: clamp(12px, 2cqi, 22px); box-shadow: 0 1cqi 3cqi #4a3b5230; }
+.heart { position: absolute; top: 4%; z-index: 4; color: #f06a8f; font-size: clamp(10px, 1.7cqi, 20px); pointer-events: none; opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .ambient, .confetti span { display: none; } }
+
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-lively="off"]) {
+    /* breathing, blinking, ears, tail — desynced per desk */
+    .cat .breathe, .kitten .bod { animation: breathe 4.2s ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+    .pose-sleep .breathe, .pose-sleep.kitten .bod { animation-duration: 6.5s; }
+    .pose-off .breathe, .pose-off .eyes, .pose-off .sway { animation: none; }
+    .cat .eyes, .kitten .eyes { animation: blink 5.6s infinite; transform-box: fill-box; transform-origin: 50% 50%; }
+    .cat .ears { animation: twitch 9s infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+    .cat .sway, .kitten .sway { animation: sway 3.4s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: 0% 100%; }
+    /* only the endless loops are offset; act/state animations always start from their beginning */
+    :is(.desk-code, .desk-qa, .desk-creative) .cat:not([class*="act-"]):not(.pose-alert) :is(.breathe, .eyes, .ears, .sway) { animation-delay: -1.7s; }
+    :is(.desk-data, .desk-research) .cat:not([class*="act-"]):not(.pose-alert) :is(.breathe, .eyes, .ears, .sway) { animation-delay: -3.1s; }
+    .kitten-spot:nth-child(odd) .kitten :is(.bod, .eyes, .sway) { animation-delay: -2.3s; }
+
+    /* idle acts (lively.js pickIdleAct) */
+    .act-yawn .head { animation: yawnHead 2.6s ease-in-out; transform-box: fill-box; transform-origin: 50% 90%; }
+    .act-yawn .eyes { animation: none; transform: scaleY(.18); }
+    .yawn { animation: yawnMouth 2.6s ease-in-out both; transform-box: fill-box; transform-origin: 50% 0%; }
+    .act-stretch .breathe { animation: stretch 2.6s ease-in-out; }
+    .act-stretch .paw { animation: stretchPaw 2.6s ease-in-out; transform-box: fill-box; }
+    .act-groom .head { animation: groomHead 2.6s ease-in-out; transform-box: fill-box; transform-origin: 50% 100%; }
+    .groom-paw { animation: lick .45s ease-in-out infinite alternate; transform-box: fill-box; }
+    .act-look .head { animation: look 2.6s ease-in-out; transform-box: fill-box; transform-origin: 50% 100%; }
+    .act-cheer { animation: cheer .8s ease-in-out 4; }
+
+    /* reactions to real states */
+    .pose-alert .paw-r { animation: wave .45s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: 30% 100%; }
+    .pose-alert .breathe { animation: hop 1.2s ease-in-out infinite; }
+    .pose-error .breathe { animation: none; transform: scale(1.05); transform-box: fill-box; transform-origin: 50% 100%; transition: transform .2s; }
+    .pose-error .sway { animation: none; transform: rotate(-12deg) scale(1.12); }
+    .kitten-spot .kitten { animation: enter .9s ease-out backwards; }
+
+    /* room */
+    .stars circle { animation: twinkle 3s ease-in-out infinite; }
+    .clock-ring { animation: ring .35s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: 50% 50%; }
+    .bell { animation: bell .3s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: 50% 0%; }
+    .meeting-sign { animation: swing 4s ease-in-out infinite alternate; }
+    .mote { animation: drift var(--t) linear var(--d) infinite; }
+    .kind-firefly .mote { animation: wander var(--t) ease-in-out var(--d) infinite alternate; }
+    .kind-petal .mote { animation: fall var(--t) linear var(--d) infinite; }
+    .yarn svg { animation: wobble 5s ease-in-out infinite; }
+    .yarn.kick-0 svg { animation: rollA 1.6s cubic-bezier(.3, .7, .4, 1); }
+    .yarn.kick-1 svg { animation: rollB 1.6s cubic-bezier(.3, .7, .4, 1); }
+    .confetti span { animation: confetti 3.4s ease-in var(--d) forwards; }
+    .party-note { animation: pop .5s ease-out; }
+    .heart { animation: heart 1.4s ease-out forwards; }
+  }
+}
+@keyframes breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.012, 1.03); } }
+@keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 95.5% { transform: scaleY(.1); } }
+@keyframes twitch { 0%, 88%, 100% { transform: translateY(0); } 90% { transform: translateY(-1.2px) scaleX(1.02); } 92% { transform: translateY(0); } }
+@keyframes sway { from { transform: rotate(-5deg); } to { transform: rotate(7deg); } }
+@keyframes yawnHead { 0%, 100% { transform: rotate(0); } 30%, 70% { transform: rotate(-5deg) translateY(-1.5px); } }
+@keyframes yawnMouth { 0%, 100% { transform: scaleY(0); } 25%, 75% { transform: scaleY(1); } }
+@keyframes stretch { 0%, 100% { transform: scale(1, 1); } 35%, 65% { transform: scale(.97, 1.08) translateY(-2px); } }
+@keyframes stretchPaw { 0%, 100% { transform: translateY(0); } 35%, 65% { transform: translateY(-1px) scaleX(1.25); } }
+@keyframes groomHead { 0%, 100% { transform: rotate(0); } 20%, 80% { transform: rotate(7deg); } }
+@keyframes lick { from { transform: translate(0, 0) rotate(0); } to { transform: translate(-2px, -3px) rotate(-12deg); } }
+@keyframes look { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-8deg); } 60% { transform: rotate(8deg); } }
+@keyframes cheer { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-8%); } }
+@keyframes wave { from { transform: translate(0, 0) rotate(0); } to { transform: translate(3px, -14px) rotate(-20deg); } }
+@keyframes hop { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-3px); } }
+@keyframes enter { 0% { transform: translateX(-60%) translateY(0); opacity: 0; } 50% { transform: translateX(-15%) translateY(-18%); opacity: 1; } 100% { transform: none; opacity: 1; } }
+@keyframes twinkle { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@keyframes ring { from { transform: rotate(-4deg); } to { transform: rotate(4deg); } }
+@keyframes bell { from { transform: rotate(-16deg); } to { transform: rotate(16deg); } }
+@keyframes swing { from { transform: rotate(-1.6deg); } to { transform: rotate(1.6deg); } }
+@keyframes drift { 0% { transform: translate(0, 0); opacity: 0; } 20% { opacity: .75; } 80% { opacity: .5; } 100% { transform: translate(3cqi, -9cqi); opacity: 0; } }
+@keyframes wander { 0% { transform: translate(0, 0); opacity: .2; } 30% { opacity: 1; } 60% { opacity: .35; } 100% { transform: translate(4cqi, -3cqi); opacity: 1; } }
+@keyframes fall { 0% { transform: translate(0, 0) rotate(0); opacity: 0; } 15% { opacity: .85; } 85% { opacity: .7; } 100% { transform: translate(-5cqi, 14cqi) rotate(240deg); opacity: 0; } }
+@keyframes wobble { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-8deg) translateX(-2%); } }
+@keyframes rollA { 0% { transform: translateX(0) rotate(0); } 45% { transform: translateX(-260%) rotate(-400deg); } 100% { transform: translateX(0) rotate(0); } }
+@keyframes rollB { 0% { transform: translateX(0) rotate(0); } 45% { transform: translateX(-260%) rotate(-400deg); } 100% { transform: translateX(0) rotate(0); } }
+@keyframes confetti { 0% { transform: translateY(0) rotate(var(--r)); opacity: 1; } 100% { transform: translateY(68cqi) rotate(calc(var(--r) + 540deg)); opacity: .8; } }
+@keyframes heart { 0% { transform: translateY(0) scale(.6); opacity: 0; } 20% { opacity: 1; transform: translateY(-1cqi) scale(1); } 100% { transform: translateY(-5cqi) scale(1.1); opacity: 0; } }

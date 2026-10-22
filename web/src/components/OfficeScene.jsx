@@ -3,6 +3,7 @@
 // The layout is shared by every scene ("ธีมห้อง"); the scene only swaps the slot drawings (SceneDecor.jsx).
 import { roomDecor } from './SceneDecor.jsx';
 import { sceneOf } from '../scenes.js';
+import { SkyTint, ClockHands } from './Lively.jsx';
 
 export const STATIONS = {
   research: { left: 8,  top: 30 },
@@ -15,7 +16,9 @@ export const STATIONS = {
 
 // Layers, back to front: wall (svg) -> wall lighting -> tilted floor + rug -> floor props (svg).
 // Cats, kittens and the corkboard are siblings above these, so they stay upright and clickable.
-export function OfficeBackdrop({ scene }) {
+// `phase` (lively.js dayPhase), `clock` (clockAngles) and `bell` come from the real local clock and
+// calendar; without them (lively off) the room is the classic still picture.
+export function OfficeBackdrop({ scene, phase = 'day', clock = null, bell = false }) {
   const d = roomDecor(scene);
   const [title, motto] = sceneOf(scene).sign;
   return (
@@ -29,6 +32,9 @@ export function OfficeBackdrop({ scene }) {
         <radialGradient id="lampglow">
           <stop offset="0" stopColor="#fff3b8" stopOpacity=".55" /><stop offset="1" stopColor="#fff3b8" stopOpacity="0" />
         </radialGradient>
+        <linearGradient id="duskSky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#6d5aa8" /><stop offset=".55" stopColor="#f39a9a" /><stop offset="1" stopColor="#ffc78a" />
+        </linearGradient>
       </defs>
 
       {/* back wall (the floor is a tilted CSS plane, see .floor in styles.css) */}
@@ -50,6 +56,7 @@ export function OfficeBackdrop({ scene }) {
       <g transform="translate(395 80)">
         <rect x="-8" y="-8" width="226" height="166" rx="18" fill="var(--frame)" />
         {d.sky}
+        <SkyTint phase={phase} />
         <path d="M105 0V150M0 75H210" stroke="var(--frame)" strokeWidth="7" />
         <path d="M-14 -10Q20 70 -6 160L-24 160L-24 -10z" fill="var(--curtain)" />
         <path d="M224 -10Q190 70 216 160L234 160L234 -10z" fill="var(--curtain)" />
@@ -69,13 +76,14 @@ export function OfficeBackdrop({ scene }) {
         ))}
       </g>
 
-      {/* wall clock (decorative, not real time) + framed fish */}
-      <g transform="translate(300 120)">
+      {/* wall clock (real local time when lively is on) + framed fish */}
+      <g transform="translate(300 120)"><g className={bell ? 'clock-ring' : ''}>
         <circle r="34" fill="#fffaf0" stroke="var(--wood)" strokeWidth="7" />
-        <path d="M0 0V-20M0 0L13 8" stroke="#4a3b52" strokeWidth="3" strokeLinecap="round" />
+        {[0, 90, 180, 270].map((a) => <path key={a} d="M0 -27V-23" transform={`rotate(${a})`} stroke="#c9b9a8" strokeWidth="2" strokeLinecap="round" />)}
+        {clock ? <ClockHands angles={clock} bell={bell} /> : <path d="M0 0V-20M0 0L13 8" stroke="#4a3b52" strokeWidth="3" strokeLinecap="round" />}
         <circle r="3" fill="#4a3b52" />
         <path d="M-26 -30l-10-14 16 6zM26 -30l10-14-16 6z" fill="var(--wood)" />
-      </g>
+      </g></g>
       <g transform="translate(660 92)">
         <rect width="120" height="84" rx="8" fill="var(--wood)" />
         <rect x="8" y="8" width="104" height="68" rx="4" fill="#e8f6ff" />
